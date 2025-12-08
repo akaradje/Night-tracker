@@ -115,7 +115,6 @@ if df_input is not None:
         active_wallets_set = set()
         active_address_list = [] 
         
-        # ตัวแปรเก็บรายการด่วน (Urgent)
         urgent_list = []
 
         for res in raw_results:
@@ -146,10 +145,8 @@ if df_input is not None:
                         days_left = (unlock_date_obj - today).days
                         
                         status = "รอ"
-                        # เช็คเงื่อนไข 7 วัน
                         if 0 <= days_left <= 7:
                             status = "⚠️ ใกล้เคลม"
-                            # เพิ่มลงรายการด่วน
                             urgent_list.append({
                                 "Wallet": w_name,
                                 "Address": addr,
@@ -168,7 +165,7 @@ if df_input is not None:
         # --- แสดงผล Dashboard ---
         st.markdown("---")
         
-        # 1. Metric Cards
+        # 1. Metric Cards (แก้ตรงนี้ครับ)
         m1, m2 = st.columns(2)
         with m1:
             st.markdown(f"""
@@ -176,11 +173,13 @@ if df_input is not None:
                 <h3>💰 ยอดรวม (NIGHT)</h3>
                 <h1 style="font-size: 3em;">{grand_total:,.2f}</h1>
             </div>""", unsafe_allow_html=True)
+            
+        # เปลี่ยนการแสดงผลเป็น "จำนวน Address"
         with m2:
             st.markdown(f"""
             <div class="metric-card" style="background-color:#cff4fc; color:#055160;">
-                <h3>💼 กระเป๋า Active</h3>
-                <h1 style="font-size: 3em;">{len(active_wallets_set)}</h1>
+                <h3>📍 เจอ Address ที่มีเหรียญ</h3>
+                <h1 style="font-size: 3em;">{len(active_address_list)}</h1>
             </div>""", unsafe_allow_html=True)
 
         # 2. ปุ่ม Download / Reset
@@ -195,32 +194,30 @@ if df_input is not None:
 
         st.markdown("---")
 
-        # ==========================================
-        # 🔥 ส่วนที่เพิ่มใหม่: แจ้งเตือน 7 วัน
-        # ==========================================
+        # แจ้งเตือน 7 วัน
         st.header("🚨 รายการที่ต้องรีบเคลม (ภายใน 7 วัน)")
         
         if urgent_list:
-            # แปลงเป็น DataFrame และเรียงตามวันที่เหลือ (น้อยไปมาก)
             df_urgent = pd.DataFrame(urgent_list).sort_values(by="Days Left")
-            
-            # โชว์ข้อความเตือน
             st.error(f"🔥 พบ {len(urgent_list)} รายการที่ใกล้ถึงกำหนด! กรุณาตรวจสอบด้านล่าง")
             
-            # แสดงตาราง (ปรับแต่งสี)
-            st.dataframe(
-                df_urgent.style.format({"Amount": "{:,.2f}"})
-                .background_gradient(cmap="Reds", subset=["Days Left"]),
-                use_container_width=True,
-                hide_index=True
-            )
+            # ใช้ st.dataframe แบบปกติถ้ายังไม่ผ่าน matplotlib หรือใช้แบบนี้ถ้าแก้ requirements.txt แล้ว
+            try:
+                st.dataframe(
+                    df_urgent.style.format({"Amount": "{:,.2f}"})
+                    .background_gradient(cmap="Reds", subset=["Days Left"]),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            except:
+                # กัน error กรณี matplotlib ยังไม่มา
+                st.dataframe(df_urgent, use_container_width=True)
         else:
             st.success("✅ สบายใจได้! ไม่มีรายการที่ต้องเคลมใน 7 วันนี้")
         
         st.markdown("---")
-        # ==========================================
 
-        # 3. รายละเอียดแยกตามกระเป๋า (เหมือนเดิม)
+        # รายละเอียดแยกตามกระเป๋า
         if active_wallets_set:
             sorted_wallets = sorted(list(active_wallets_set), key=lambda x: wallet_stats[x])
             st.subheader("📂 รายละเอียดแยกตามกระเป๋า (ยอดน้อย -> มาก)")
@@ -231,7 +228,6 @@ if df_input is not None:
                     this_wallet_keys = [k for k in address_details.keys() if k[0] == w]
                     sorted_keys = sorted(this_wallet_keys, key=lambda k: address_details[k]['total'])
                     
-                    # ตารางสรุป
                     summary_data = []
                     for k in sorted_keys:
                         min_days = min([r['Days Left'] for r in address_details[k]['records']]) if address_details[k]['records'] else 999
@@ -243,7 +239,6 @@ if df_input is not None:
                         })
                     st.dataframe(pd.DataFrame(summary_data).style.format({"Total": "{:,.2f}"}), use_container_width=True, hide_index=True)
                     
-                    # เจาะลึก
                     st.divider()
                     st.write("##### 🔍 ดูรายละเอียดแต่ละ Address")
                     options = sorted_keys
