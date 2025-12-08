@@ -34,7 +34,6 @@ API_URL = "https://aysqjcborxgdnivlisxl.supabase.co/functions/v1/thaw-schedule"
 def process_claim_time(iso_str, now_thai):
     try:
         # 1. แปลง string จาก API (UTC) ให้เป็น datetime
-        # ตัด Z หรือ T ออกเพื่อ parse ง่ายๆ (สมมติ format: 2025-12-10T00:00:00)
         clean_str = iso_str.replace('Z', '').split('.')[0] 
         dt_utc = datetime.fromisoformat(clean_str)
         
@@ -58,14 +57,14 @@ def process_claim_time(iso_str, now_thai):
             parts = []
             if days > 0: parts.append(f"{days}วัน")
             if hours > 0: parts.append(f"{hours}ชม.")
-            if days == 0 and minutes > 0: parts.append(f"{minutes}น.") # โชว์นาทีเฉพาะถ้าเหลือน้อยกว่า 1 วัน
+            if days == 0 and minutes > 0: parts.append(f"{minutes}น.") 
             
             countdown_str = " ".join(parts) if parts else "เร็วๆ นี้"
             sort_val = total_seconds
 
         # คืนค่ากลับไปใช้
         return {
-            "thai_date_str": dt_thai.strftime('%Y-%m-%d %H:%M'), # โชว์เวลาไทยด้วย
+            "thai_date_str": dt_thai.strftime('%Y-%m-%d %H:%M'), 
             "countdown": countdown_str,
             "sort_val": sort_val,
             "is_urgent": 0 <= days <= 7 if total_seconds > 0 else False
@@ -151,7 +150,6 @@ if df_input is not None:
             raw_results = asyncio.run(process_all_wallets(df_input))
             
         # --- ประมวลผล ---
-        # 1. เวลาปัจจุบัน (ไทย)
         now_thai = datetime.utcnow() + timedelta(hours=7)
         st.write(f"🕒 **อัปเดตล่าสุด:** {now_thai.strftime('%d/%m/%Y %H:%M:%S')} (เวลาไทย)")
         
@@ -186,23 +184,19 @@ if df_input is not None:
                     address_details[key]["total"] += addr_total
                     
                     for thaw in thaws:
-                        # คำนวณเวลาแบบละเอียด
                         time_info = process_claim_time(thaw['thawing_period_start'], now_thai)
                         
-                        # เช็คเพื่อใส่ใน address_details
                         address_details[key]["records"].append({
                             "Date (Thai)": time_info['thai_date_str'],
                             "Amount": thaw['amount'] / 1000000,
                             "Countdown": time_info['countdown'],
                             "Status": "⚠️ ใกล้เคลม" if time_info['is_urgent'] else "รอ",
-                            "_sort": time_info['sort_val'] # hidden column for sorting
+                            "_sort": time_info['sort_val'] 
                         })
                         
-                        # อัปเดต min_sort ของ address นี้ (เพื่อเรียงลำดับกระเป๋าที่ต้องรีบเคลมก่อน)
                         if time_info['sort_val'] < address_details[key]["min_sort"] and time_info['sort_val'] > 0:
                             address_details[key]["min_sort"] = time_info['sort_val']
 
-                        # ถ้าด่วน ให้ใส่ list แยก
                         if time_info['is_urgent']:
                             urgent_list.append({
                                 "Wallet": w_name,
@@ -224,10 +218,11 @@ if df_input is not None:
                 <h1 style="font-size: 3em;">{grand_total:,.2f}</h1>
             </div>""", unsafe_allow_html=True)
         with m2:
+            # === แก้ตรงนี้: เปลี่ยนเป็น Address ทั้งหมด ===
             st.markdown(f"""
             <div class="metric-card" style="background-color:#cff4fc; color:#055160;">
-                <h3>💼 กระเป๋า Active</h3>
-                <h1 style="font-size: 3em;">{len(active_wallets_set)}</h1>
+                <h3>📝 Address ทั้งหมด</h3>
+                <h1 style="font-size: 3em;">{len(active_address_list)}</h1>
             </div>""", unsafe_allow_html=True)
 
         if active_address_list and source_type != "active":
@@ -242,13 +237,12 @@ if df_input is not None:
         st.markdown("---")
 
         # ==========================================
-        # 🔥 ตารางแจ้งเตือนด่วน (มี Countdown)
+        # 🔥 ตารางแจ้งเตือนด่วน
         # ==========================================
         st.header("🚨 รายการที่ต้องรีบเคลม (ภายใน 7 วัน)")
         
         if urgent_list:
             df_urgent = pd.DataFrame(urgent_list).sort_values(by="_sort")
-            # ลบคอลัมน์ _sort ออกก่อนโชว์
             df_show = df_urgent.drop(columns=["_sort"])
             
             st.error(f"🔥 พบ {len(urgent_list)} รายการ! ดูเวลาถอยหลังช่องขวาสุด")
@@ -272,13 +266,10 @@ if df_input is not None:
                 w_total = wallet_stats[w]
                 with st.expander(f"💼 {w} (รวม: {w_total:,.2f} NIGHT)"):
                     this_wallet_keys = [k for k in address_details.keys() if k[0] == w]
-                    # เรียงตามเวลาเคลมที่ใกล้ที่สุด
                     sorted_keys = sorted(this_wallet_keys, key=lambda k: address_details[k]['min_sort'])
                     
-                    # ตารางสรุปย่อย
                     summary_data = []
                     for k in sorted_keys:
-                        # หา record ที่ใกล้ที่สุดมาโชว์เป็นตัวแทน
                         recs = address_details[k]['records']
                         recs_sorted = sorted(recs, key=lambda r: r['_sort'])
                         nearest = recs_sorted[0] if recs_sorted else {}
@@ -292,7 +283,6 @@ if df_input is not None:
                     
                     st.dataframe(pd.DataFrame(summary_data).style.format({"Total": "{:,.2f}"}), use_container_width=True, hide_index=True)
                     
-                    # เจาะลึก
                     st.divider()
                     st.write("##### 🔍 ตารางเวลาเคลมละเอียด")
                     options = sorted_keys
