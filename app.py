@@ -2,7 +2,7 @@ import streamlit as st
 import asyncio
 import aiohttp
 import pandas as pd
-from datetime import datetime, timedelta # <--- 1. เพิ่ม timedelta
+from datetime import datetime, timedelta
 import os
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
@@ -29,6 +29,49 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 API_URL = "https://aysqjcborxgdnivlisxl.supabase.co/functions/v1/thaw-schedule"
+
+# --- Helper Function: แปลงเวลาและคำนวณ Countdown ---
+def process_claim_time(iso_str, now_thai):
+    try:
+        # 1. แปลง string จาก API (UTC) ให้เป็น datetime
+        # ตัด Z หรือ T ออกเพื่อ parse ง่ายๆ (สมมติ format: 2025-12-10T00:00:00)
+        clean_str = iso_str.replace('Z', '').split('.')[0] 
+        dt_utc = datetime.fromisoformat(clean_str)
+        
+        # 2. แปลงเป็นเวลาไทย (UTC+7)
+        dt_thai = dt_utc + timedelta(hours=7)
+        
+        # 3. คำนวณเวลาที่เหลือ
+        delta = dt_thai - now_thai
+        total_seconds = int(delta.total_seconds())
+        
+        # 4. สร้างข้อความนับถอยหลัง
+        if total_seconds <= 0:
+            countdown_str = "✅ เคลมได้เลย"
+            sort_val = -1
+        else:
+            days = total_seconds // 86400
+            hours = (total_seconds % 86400) // 3600
+            minutes = (total_seconds % 3600) // 60
+            
+            # จัด format สวยๆ
+            parts = []
+            if days > 0: parts.append(f"{days}วัน")
+            if hours > 0: parts.append(f"{hours}ชม.")
+            if days == 0 and minutes > 0: parts.append(f"{minutes}น.") # โชว์นาทีเฉพาะถ้าเหลือน้อยกว่า 1 วัน
+            
+            countdown_str = " ".join(parts) if parts else "เร็วๆ นี้"
+            sort_val = total_seconds
+
+        # คืนค่ากลับไปใช้
+        return {
+            "thai_date_str": dt_thai.strftime('%Y-%m-%d %H:%M'), # โชว์เวลาไทยด้วย
+            "countdown": countdown_str,
+            "sort_val": sort_val,
+            "is_urgent": 0 <= days <= 7 if total_seconds > 0 else False
+        }
+    except:
+        return {"thai_date_str": iso_str, "countdown": "-", "sort_val": 999999999, "is_urgent": False}
 
 # --- 2. ฟังก์ชันโหลดข้อมูล ---
 async def fetch_data(session, wallet_name, address):
@@ -107,12 +150,9 @@ if df_input is not None:
         with st.spinner('กำลังดึงข้อมูล...'):
             raw_results = asyncio.run(process_all_wallets(df_input))
             
-        # --- ประมวลผล (ปรับเวลาไทยตรงนี้) ---
-        # 2. ตั้งค่าเวลาไทย (UTC+7)
+        # --- ประมวลผล ---
+        # 1. เวลาปัจจุบัน (ไทย)
         now_thai = datetime.utcnow() + timedelta(hours=7)
-        today = now_thai 
-        
-        # แสดงเวลา Update ล่าสุดให้เห็นชัดๆ
         st.write(f"🕒 **อัปเดตล่าสุด:** {now_thai.strftime('%d/%m/%Y %H:%M:%S')} (เวลาไทย)")
         
         wallet_stats = {}
@@ -120,8 +160,6 @@ if df_input is not None:
         grand_total = 0
         active_wallets_set = set()
         active_address_list = [] 
-        
-        # ตัวแปรเก็บรายการด่วน (Urgent)
         urgent_list = []
 
         for res in raw_results:
@@ -144,40 +182,40 @@ if df_input is not None:
                     
                     key = (w_name, addr)
                     if key not in address_details:
-                        address_details[key] = {"total": 0, "records": []}
+                        address_details[key] = {"total": 0, "records": [], "min_sort": 999999999}
                     address_details[key]["total"] += addr_total
                     
                     for thaw in thaws:
-                        # แปลง string วันที่จาก API เป็น datetime object
-                        unlock_date_obj = datetime.strptime(thaw['thawing_period_start'][:10], "%Y-%m-%d")
+                        # คำนวณเวลาแบบละเอียด
+                        time_info = process_claim_time(thaw['thawing_period_start'], now_thai)
                         
-                        # คำนวณวันคงเหลือ (เทียบกับ today ที่เป็นเวลาไทยแล้ว)
-                        days_left = (unlock_date_obj - today).days + 1 # +1 เพื่อปัดเศษวันให้ make sense
+                        # เช็คเพื่อใส่ใน address_details
+                        address_details[key]["records"].append({
+                            "Date (Thai)": time_info['thai_date_str'],
+                            "Amount": thaw['amount'] / 1000000,
+                            "Countdown": time_info['countdown'],
+                            "Status": "⚠️ ใกล้เคลม" if time_info['is_urgent'] else "รอ",
+                            "_sort": time_info['sort_val'] # hidden column for sorting
+                        })
                         
-                        status = "รอ"
-                        # เช็คเงื่อนไข 7 วัน
-                        if 0 <= days_left <= 7:
-                            status = "⚠️ ใกล้เคลม"
-                            # เพิ่มลงรายการด่วน
+                        # อัปเดต min_sort ของ address นี้ (เพื่อเรียงลำดับกระเป๋าที่ต้องรีบเคลมก่อน)
+                        if time_info['sort_val'] < address_details[key]["min_sort"] and time_info['sort_val'] > 0:
+                            address_details[key]["min_sort"] = time_info['sort_val']
+
+                        # ถ้าด่วน ให้ใส่ list แยก
+                        if time_info['is_urgent']:
                             urgent_list.append({
                                 "Wallet": w_name,
                                 "Address": addr,
-                                "Date": thaw['thawing_period_start'][:10],
+                                "Date (Thai)": time_info['thai_date_str'],
                                 "Amount": thaw['amount'] / 1000000,
-                                "Days Left": days_left
+                                "Countdown": time_info['countdown'],
+                                "_sort": time_info['sort_val']
                             })
-                            
-                        address_details[key]["records"].append({
-                            "Date": thaw['thawing_period_start'][:10],
-                            "Amount": thaw['amount'] / 1000000,
-                            "Days Left": days_left,
-                            "Status": status
-                        })
 
         # --- แสดงผล Dashboard ---
         st.markdown("---")
         
-        # 1. Metric Cards
         m1, m2 = st.columns(2)
         with m1:
             st.markdown(f"""
@@ -192,7 +230,6 @@ if df_input is not None:
                 <h1 style="font-size: 3em;">{len(active_wallets_set)}</h1>
             </div>""", unsafe_allow_html=True)
 
-        # 2. ปุ่ม Download / Reset
         if active_address_list and source_type != "active":
             df_active = pd.DataFrame(active_address_list)
             st.download_button("📥 โหลด active_wallets.csv", df_active.to_csv(index=False).encode('utf-8'), "active_wallets.csv", "text/csv")
@@ -205,60 +242,64 @@ if df_input is not None:
         st.markdown("---")
 
         # ==========================================
-        # 🔥 ส่วนที่เพิ่มใหม่: แจ้งเตือน 7 วัน
+        # 🔥 ตารางแจ้งเตือนด่วน (มี Countdown)
         # ==========================================
         st.header("🚨 รายการที่ต้องรีบเคลม (ภายใน 7 วัน)")
         
         if urgent_list:
-            # แปลงเป็น DataFrame และเรียงตามวันที่เหลือ (น้อยไปมาก)
-            df_urgent = pd.DataFrame(urgent_list).sort_values(by="Days Left")
+            df_urgent = pd.DataFrame(urgent_list).sort_values(by="_sort")
+            # ลบคอลัมน์ _sort ออกก่อนโชว์
+            df_show = df_urgent.drop(columns=["_sort"])
             
-            # โชว์ข้อความเตือน
-            st.error(f"🔥 พบ {len(urgent_list)} รายการที่ใกล้ถึงกำหนด! กรุณาตรวจสอบด้านล่าง")
+            st.error(f"🔥 พบ {len(urgent_list)} รายการ! ดูเวลาถอยหลังช่องขวาสุด")
             
-            # แสดงตาราง (ปรับแต่งสี)
             st.dataframe(
-                df_urgent.style.format({"Amount": "{:,.2f}"})
-                .background_gradient(cmap="Reds", subset=["Days Left"]),
+                df_show.style.format({"Amount": "{:,.2f}"}),
                 use_container_width=True,
                 hide_index=True
             )
         else:
-            st.success("✅ สบายใจได้! ไม่มีรายการที่ต้องเคลมใน 7 วันนี้")
+            st.success("✅ สบายใจได้! ไม่มีรายการด่วนใน 7 วันนี้")
         
         st.markdown("---")
-        # ==========================================
 
-        # 3. รายละเอียดแยกตามกระเป๋า (เหมือนเดิม)
+        # 3. รายละเอียดแยกตามกระเป๋า
         if active_wallets_set:
             sorted_wallets = sorted(list(active_wallets_set), key=lambda x: wallet_stats[x])
-            st.subheader("📂 รายละเอียดแยกตามกระเป๋า (ยอดน้อย -> มาก)")
+            st.subheader("📂 รายละเอียดแยกตามกระเป๋า")
             
             for w in sorted_wallets:
                 w_total = wallet_stats[w]
                 with st.expander(f"💼 {w} (รวม: {w_total:,.2f} NIGHT)"):
                     this_wallet_keys = [k for k in address_details.keys() if k[0] == w]
-                    sorted_keys = sorted(this_wallet_keys, key=lambda k: address_details[k]['total'])
+                    # เรียงตามเวลาเคลมที่ใกล้ที่สุด
+                    sorted_keys = sorted(this_wallet_keys, key=lambda k: address_details[k]['min_sort'])
                     
-                    # ตารางสรุป
+                    # ตารางสรุปย่อย
                     summary_data = []
                     for k in sorted_keys:
-                        min_days = min([r['Days Left'] for r in address_details[k]['records']]) if address_details[k]['records'] else 999
+                        # หา record ที่ใกล้ที่สุดมาโชว์เป็นตัวแทน
+                        recs = address_details[k]['records']
+                        recs_sorted = sorted(recs, key=lambda r: r['_sort'])
+                        nearest = recs_sorted[0] if recs_sorted else {}
+                        
                         summary_data.append({
                             "Address": k[1],
                             "Total": address_details[k]['total'],
-                            "Next Claim (Days)": min_days,
-                            "Status": "⚠️ เตรียมเคลม" if min_days <= 7 else "ปกติ"
+                            "Next Claim": nearest.get('Date (Thai)', '-'),
+                            "Countdown": nearest.get('Countdown', '-')
                         })
+                    
                     st.dataframe(pd.DataFrame(summary_data).style.format({"Total": "{:,.2f}"}), use_container_width=True, hide_index=True)
                     
                     # เจาะลึก
                     st.divider()
-                    st.write("##### 🔍 ดูรายละเอียดแต่ละ Address")
+                    st.write("##### 🔍 ตารางเวลาเคลมละเอียด")
                     options = sorted_keys
                     format_func = lambda k: f"{k[1]} ({address_details[k]['total']:,.2f})"
                     selected_key = st.selectbox("เลือก Address:", options=options, format_func=format_func, key=f"sel_{w}")
                     
                     if selected_key:
                         records = address_details[selected_key]['records']
-                        st.dataframe(pd.DataFrame(records).style.format({"Amount": "{:,.2f}"}), use_container_width=True, hide_index=True)
+                        df_recs = pd.DataFrame(records).sort_values(by="_sort").drop(columns=["_sort"])
+                        st.dataframe(df_recs.style.format({"Amount": "{:,.2f}"}), use_container_width=True, hide_index=True)
