@@ -12,7 +12,7 @@ st.set_page_config(page_title="NIGHT Tracker (THB)", page_icon="🌙", layout="w
 # ==============================================================================
 # 🔑 ส่วนตั้งค่า KEY (แก้ไขตรงนี้ทีเดียวจบครับ)
 # ==============================================================================
-YOUR_KEY_HERE = "วาง_KEY_ยาวๆ_ของคุณตรงนี้_ในเครื่องหมายคำพูดครับ" 
+YOUR_KEY_HERE = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6ImZlMWU5MjhhLWE1YjMtNDc3OC04ZjE4LTFlODZhYjcyZTQ2NiIsIm9yZ0lkIjoiMjU3NjgzIiwidXNlcklkIjoiMjYxNjQyIiwidHlwZUlkIjoiMmNiZDhhNzUtNDk3Yi00ZTRhLWI2YmQtYmQzNTc4ODY4MjAyIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjUyNzU1MzUsImV4cCI6NDkyMTAzNTUzNX0.sLbHogFDbXQ0TGm5VXPD7DWg1f22ztUnqR8LzfGAUoM" 
 # เช่น: YOUR_KEY_HERE = "eyJhbGciOiJIUzI1NiIsIn..."
 # ==============================================================================
 
@@ -256,3 +256,4 @@ if df_input is not None:
 
         if active_list and not os.path.exists('active_wallets.csv'):
             pd.DataFrame(active_list).to_csv('active_wallets.csv', index=False)
+
