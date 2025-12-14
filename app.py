@@ -8,7 +8,7 @@ import requests
 import json
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
-st.set_page_config(page_title="NIGHT Tracker (Split View)", page_icon="🌙", layout="wide")
+st.set_page_config(page_title="NIGHT Tracker (Official Style)", page_icon="🌙", layout="wide")
 
 # ==============================================================================
 # ⚙️ CONFIG & KEY
@@ -25,10 +25,10 @@ st.markdown("""
         padding: 15px; border-radius: 10px; margin-bottom: 20px; text-align: center;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    .ready-card { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-    .locked-card { background-color: #e2e3e5; color: #383d41; border: 1px solid #d6d8db; }
+    .redeemed-card { background-color: #e9ecef; color: #495057; border: 1px solid #ced4da; }
+    .remaining-card { background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
     .total-card { background-color: #cff4fc; color: #055160; border: 1px solid #b6effb; }
-    .update-btn { margin-bottom: 20px; }
+    .stDataFrame { font-size: 14px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -49,8 +49,8 @@ def get_market_price():
     except: pass
     return usd_price, usd_price * thb_rate
 
-# --- Function: คำนวณเวลา ---
-def process_claim_time(iso_str):
+# --- Function: คำนวณเวลาและสถานะ ---
+def process_claim_status(iso_str, tx_id):
     try:
         now_thai = datetime.utcnow() + timedelta(hours=7)
         clean_str = iso_str.replace('Z', '').split('.')[0] 
@@ -59,25 +59,21 @@ def process_claim_time(iso_str):
         delta = dt_thai - now_thai
         total_seconds = int(delta.total_seconds())
         
-        # ✅ ผ่านกำหนดแล้ว = พร้อมเคลม (Ready)
-        if total_seconds <= 0:
-            return {"text": "✅ พร้อมเคลม", "sort": -999999, "is_ready": True, "urgent": True, "date": dt_thai}
-        
         days = total_seconds // 86400
-        hours = (total_seconds % 86400) // 3600
         
-        parts = []
-        if days > 0: parts.append(f"{days}วัน")
-        if hours > 0: parts.append(f"{hours}ชม.")
+        # Logic การแยกสถานะ
+        # 1. ถ้ามี Tx ID = เคลมไปแล้ว (Redeemed)
+        if tx_id is not None and len(str(tx_id)) > 5:
+             return {"text": "✅ เคลมแล้ว", "type": "redeemed", "date": dt_thai, "sort": 999999}
         
-        countdown = " ".join(parts) if parts else "เร็วๆ นี้"
-        urgent = True if days <= 7 else False
-        
-        # 🔥 ใกล้ถึง หรือ ⏳ รอ
-        icon = "🔥" if days <= 7 else "🔒"
-        return {"text": f"{icon} อีก {countdown}", "sort": total_seconds, "is_ready": False, "urgent": urgent, "date": dt_thai}
+        # 2. ถ้าไม่มี Tx ID -> เช็คเวลา
+        if total_seconds <= 0:
+            return {"text": "🟢 พร้อมถอน", "type": "ready", "date": dt_thai, "sort": -999999}
+        else:
+            return {"text": f"🔒 รอ {days} วัน", "type": "locked", "date": dt_thai, "sort": total_seconds}
+            
     except:
-        return {"text": "-", "sort": 999999, "is_ready": False, "urgent": False, "date": None}
+        return {"text": "-", "type": "unknown", "date": None, "sort": 999999}
 
 # --- Function: API ---
 async def fetch_vesting_data(session, wallet_name, address):
@@ -114,7 +110,7 @@ async def update_database(df):
             res = await f
             results.append(res)
             progress_bar.progress((i + 1) / len(tasks))
-            status_text.text(f"📥 กำลังโหลด... {i+1}/{len(tasks)}")
+            status_text.text(f"📥 กำลังโหลดข้อมูล... {i+1}/{len(tasks)}")
         progress_bar.empty()
         status_text.empty()
     return results
@@ -122,7 +118,7 @@ async def update_database(df):
 # ==============================================================================
 # MAIN UI
 # ==============================================================================
-st.title("🌙 NIGHT Tracker: แยกยอด พร้อมใช้ vs ล็อค")
+st.title("🌙 NIGHT Tracker: รายงานสถานะตามจริง")
 
 col_top1, col_top2 = st.columns([3, 1])
 
@@ -135,7 +131,7 @@ elif os.path.exists('active_wallets.csv'): df_input = pd.read_csv('active_wallet
 with col_top2:
     if df_input is not None:
         if st.button("🔄 ดึงข้อมูลใหม่ (Update)", type="secondary", use_container_width=True):
-            with st.spinner("⏳ กำลังโหลด..."):
+            with st.spinner("⏳ กำลังโหลดจาก Blockchain..."):
                 raw_data = asyncio.run(update_database(df_input))
                 save_data = {"updated_at": datetime.now().isoformat(), "wallets": raw_data}
                 with open(CACHE_FILE, 'w', encoding='utf-8') as f:
@@ -152,10 +148,12 @@ else:
     with st.spinner("..เช็คราคา.."):
         p_usd, p_thb = get_market_price()
 
-    total_ready = 0
-    total_locked = 0
+    # ตัวแปรสรุปยอดรวมทั้งพอร์ต
+    grand_redeemed = 0
+    grand_remaining = 0
+    grand_total = 0
+    
     wallets_data = {}
-    urgent_items = []
     
     # Loop คำนวณ
     for item in cached.get("wallets", []):
@@ -164,112 +162,117 @@ else:
             w_name = item['wallet']
             addr = item['address']
             
-            w_ready = 0
-            w_locked = 0
+            # ยอดรายกระเป๋า
+            w_redeemed = 0
+            w_remaining = 0
+            w_total = 0
             
-            addr_info = {"claims": []}
+            claims_list = []
             
             for t in thaws:
-                time_data = process_claim_time(t['thawing_period_start'])
+                tx_id = t.get('transaction_id') # จุดสำคัญ: เช็ค Tx ID
+                status_info = process_claim_status(t['thawing_period_start'], tx_id)
                 amt = t['amount'] / 1_000_000
                 
-                # แยกยอด Ready vs Locked
-                if time_data['is_ready']:
-                    total_ready += amt
-                    w_ready += amt
+                # บวกยอดรวม
+                w_total += amt
+                if status_info['type'] == 'redeemed':
+                    w_redeemed += amt
                 else:
-                    total_locked += amt
-                    w_locked += amt
+                    w_remaining += amt
                 
-                addr_info["claims"].append({
-                    "date": time_data['date'].strftime('%d/%m/%y') if time_data['date'] else "-",
+                claims_list.append({
+                    "date": status_info['date'].strftime('%d/%m/%Y') if status_info['date'] else "-",
                     "amount": amt,
-                    "status": time_data['text'],
-                    "is_ready": time_data['is_ready'],
-                    "sort": time_data['sort']
+                    "status": status_info['text'],
+                    "type": status_info['type'],
+                    "sort": status_info['sort']
                 })
-                
-                if time_data['urgent'] or time_data['is_ready']:
-                    urgent_items.append({
-                        "Wallet": w_name,
-                        "Type": "✅ พร้อมถอน" if time_data['is_ready'] else "🔥 ใกล้ถึง",
-                        "Amount": amt,
-                        "Value (THB)": amt * p_thb,
-                        "Status": time_data['text'],
-                        "_sort": time_data['sort']
-                    })
-            
-            # เก็บข้อมูลถ้ามียอด
-            if w_ready + w_locked > 0:
-                if w_name not in wallets_data: wallets_data[w_name] = {"ready": 0, "locked": 0, "addrs": {}}
-                wallets_data[w_name]["ready"] += w_ready
-                wallets_data[w_name]["locked"] += w_locked
-                
-                # เก็บรายละเอียด Address
-                addr_info["summary"] = f"พร้อม: {w_ready:,.2f} | ล็อค: {w_locked:,.2f}"
-                wallets_data[w_name]["addrs"][addr] = addr_info
 
-    # --- 📊 แสดงผลแบบแยกยอด ---
+            # บวกเข้ายอดรวมใหญ่
+            grand_redeemed += w_redeemed
+            grand_remaining += w_remaining
+            grand_total += w_total
+            
+            # เก็บข้อมูลไว้โชว์
+            if w_total > 0:
+                if w_name not in wallets_data: 
+                    wallets_data[w_name] = {"redeemed": 0, "remaining": 0, "total": 0, "addrs": {}}
+                
+                wallets_data[w_name]["redeemed"] += w_redeemed
+                wallets_data[w_name]["remaining"] += w_remaining
+                wallets_data[w_name]["total"] += w_total
+                
+                wallets_data[w_name]["addrs"][addr] = {
+                    "redeemed": w_redeemed,
+                    "remaining": w_remaining,
+                    "total": w_total,
+                    "claims": claims_list
+                }
+
+    # --- 📊 แสดงผล Dashboard แบบ Official ---
     st.divider()
     
     # Row 1: Dashboard ใหญ่
     c1, c2, c3 = st.columns(3)
     
-    # การ์ด 1: พร้อมถอน (สำคัญสุด)
-    val_ready = total_ready * p_thb
+    # การ์ด 1: Redeemed (เคลมไปแล้ว)
     c1.markdown(f"""
-    <div class="metric-card ready-card">
-        <h5>🟢 พร้อมถอนทันที (Ready)</h5>
-        <h2>{total_ready:,.2f} NIGHT</h2>
-        <small>มูลค่า: ฿{val_ready:,.2f}</small>
+    <div class="metric-card redeemed-card">
+        <h5>✅ Redeemed so far</h5>
+        <h2>{grand_redeemed:,.2f} NIGHT</h2>
+        <small>ได้รับแล้ว: ฿{grand_redeemed * p_thb:,.2f}</small>
     </div>""", unsafe_allow_html=True)
     
-    # การ์ด 2: รอล็อค (อนาคต)
-    val_locked = total_locked * p_thb
+    # การ์ด 2: Left to redeem (เหลือ)
     c2.markdown(f"""
-    <div class="metric-card locked-card">
-        <h5>🔒 รอปลดล็อค (Locked)</h5>
-        <h2>{total_locked:,.2f} NIGHT</h2>
-        <small>มูลค่า: ฿{val_locked:,.2f}</small>
+    <div class="metric-card remaining-card">
+        <h5>⏳ Total left to redeem</h5>
+        <h2>{grand_remaining:,.2f} NIGHT</h2>
+        <small>รอเคลม: ฿{grand_remaining * p_thb:,.2f}</small>
     </div>""", unsafe_allow_html=True)
     
-    # การ์ด 3: รวมทั้งหมด
-    total_all = total_ready + total_locked
-    val_all = total_all * p_thb
+    # การ์ด 3: Total Allocation (ทั้งหมด)
     c3.markdown(f"""
     <div class="metric-card total-card">
-        <h5>💰 ยอดคงเหลือรวม (Total)</h5>
-        <h2>{total_all:,.2f} NIGHT</h2>
-        <small>รวมทั้งพอร์ต: ฿{val_all:,.2f}</small>
+        <h5>📦 Total allocation size</h5>
+        <h2>{grand_total:,.2f} NIGHT</h2>
+        <small>มูลค่ารวม: ฿{grand_total * p_thb:,.2f}</small>
     </div>""", unsafe_allow_html=True)
-
-    # ตารางแจ้งเตือน
-    if urgent_items:
-        st.error(f"🚨 รายการที่ต้องจัดการ ({len(urgent_items)} รายการ)")
-        df_urg = pd.DataFrame(urgent_items).sort_values("_sort").drop(columns=["_sort"])
-        st.dataframe(df_urg, use_container_width=True, hide_index=True)
 
     # รายละเอียดรายกระเป๋า
     st.subheader("📂 รายละเอียดรายกระเป๋า")
-    # เรียงตามยอดพร้อมถอนก่อน (จะได้รู้ว่าอันไหนสำคัญ)
-    sorted_wallets = sorted(wallets_data.items(), key=lambda x: x[1]['ready'], reverse=True)
+    
+    # เรียงตามยอดที่เหลือ (จะได้โฟกัสอันที่ยังไม่เคลม)
+    sorted_wallets = sorted(wallets_data.items(), key=lambda x: x[1]['remaining'], reverse=True)
     
     for w_name, data in sorted_wallets:
-        total_w = data['ready'] + data['locked']
-        ready_icon = "🟢" if data['ready'] > 0 else "⚪"
+        icon = "🟢" if data['remaining'] > 0 else "⚪"
         
-        with st.expander(f"{ready_icon} {w_name} | พร้อม: {data['ready']:,.2f} | ล็อค: {data['locked']:,.2f} (รวม {total_w:,.2f})"):
+        with st.expander(f"{icon} {w_name} | เหลือ: {data['remaining']:,.2f} | รับแล้ว: {data['redeemed']:,.2f} (รวม {data['total']:,.2f})"):
             for addr, info in data['addrs'].items():
-                st.write(f"**Address:** `{addr}`")
+                st.markdown(f"**Address:** `{addr}`")
                 
-                # แปลงเป็น DataFrame สวยๆ
-                df_claims = pd.DataFrame(info['claims'])[['date', 'amount', 'status']]
-                df_claims.columns = ["วันที่", "จำนวน (NIGHT)", "สถานะ"]
+                # ตารางสรุปย่อย
+                c_a, c_b, c_c = st.columns(3)
+                c_a.info(f"รับแล้ว: {info['redeemed']:,.2f}")
+                c_b.success(f"เหลือ: {info['remaining']:,.2f}")
+                c_c.write(f"รวม: {info['total']:,.2f}")
                 
-                # ไฮไลท์แถวที่พร้อมเคลม
+                # รายละเอียดงวด
+                df_claims = pd.DataFrame(info['claims']).sort_values('sort')
+                df_show = df_claims[['date', 'amount', 'status']]
+                df_show.columns = ["วันที่", "จำนวน", "สถานะ"]
+                
+                # ไฮไลท์สีตามสถานะ
+                def highlight_status(s):
+                    if '✅' in s: return 'background-color: #e2e3e5; color: #6c757d' # เทา (จบแล้ว)
+                    if '🟢' in s: return 'background-color: #d1e7dd; color: #0f5132' # เขียว (พร้อม)
+                    return ''
+                
                 st.dataframe(
-                    df_claims.style.format({"จำนวน (NIGHT)": "{:,.2f}"})
-                    .apply(lambda x: ['background-color: #d4edda' if '✅' in str(val) else '' for val in x], axis=1),
+                    df_show.style.format({"จำนวน": "{:,.2f}"})
+                    .map(highlight_status, subset=['สถานะ']),
                     use_container_width=True, hide_index=True
                 )
                 st.markdown("---")
