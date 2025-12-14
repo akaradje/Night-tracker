@@ -8,15 +8,15 @@ import requests
 import json
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
-st.set_page_config(page_title="NIGHT Tracker (Offline Mode)", page_icon="🌙", layout="wide")
+st.set_page_config(page_title="NIGHT Tracker (Total Alloc)", page_icon="🌙", layout="wide")
 
 # ==============================================================================
 # ⚙️ CONFIG & KEY
 # ==============================================================================
 CACHE_FILE = "vesting_data.json"  # ไฟล์สำหรับบันทึกข้อมูล
 TOKEN_ADDRESS = "0xfe930c2d63aed9b82fc4dbc801920dd2c1a3224f" # Contract NIGHT
-# ใส่ Key ของคุณให้แล้วครับ
 MY_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6ImZlMWU5MjhhLWE1YjMtNDc3OC04ZjE4LTFlODZhYjcyZTQ2NiIsIm9yZ0lkIjoiMjU3NjgzIiwidXNlcklkIjoiMjYxNjQyIiwidHlwZUlkIjoiMmNiZDhhNzUtNDk3Yi00ZTRhLWI2YmQtYmQzNTc4ODY4MjAyIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjUyNzU1MzUsImV4cCI6NDkyMTAzNTUzNX0.sLbHogFDbXQ0TGm5VXPD7DWg1f22ztUnqR8LzfGAUoM"
+REDEEM_URL = "https://redeem.midnight.gd/" # ลิงก์หน้าเคลม
 # ==============================================================================
 
 # CSS แต่งสวย
@@ -31,6 +31,18 @@ st.markdown("""
     .value-card { background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
     .stAlert {margin-top: 10px;}
     .update-btn { margin-bottom: 20px; }
+    
+    /* ปุ่มกดเคลมสวยๆ */
+    .redeem-btn {
+        display: inline-block;
+        background-color: #6f42c1; color: white !important;
+        padding: 8px 20px; border-radius: 6px;
+        text-decoration: none; font-weight: bold;
+        margin-bottom: 15px; text-align: center;
+        width: 100%;
+        transition: background-color 0.3s;
+    }
+    .redeem-btn:hover { background-color: #5a32a3; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -133,7 +145,7 @@ async def update_database(df):
 # ==============================================================================
 # 🖥️ MAIN UI
 # ==============================================================================
-st.title("🌙 NIGHT Tracker (Saved Data Mode)")
+st.title("🌙 NIGHT Tracker (Total Alloc)")
 
 col_top1, col_top2 = st.columns([3, 1])
 
@@ -180,7 +192,7 @@ else:
         p_usd, p_thb = get_market_price()
 
     # 3. ประมวลผล
-    total_night = 0
+    grand_total_alloc = 0  # ยอดทั้งหมด (รวมที่เคลมไปแล้ว)
     wallets_data = {}
     urgent_items = []
     
@@ -191,21 +203,25 @@ else:
             w_name = item['wallet']
             addr = item['address']
             
-            # --- แก้ไขตรงนี้: กรองเฉพาะอันที่ไม่มี Transaction ID (ยังไม่เคลม) ---
+            # --- 1. คำนวณยอดทั้งหมด (Total Allocation) ---
+            # รวมทุกรายการที่มี (ทั้งเคลมแล้วและยังไม่เคลม)
+            w_total_alloc = sum(t['amount'] for t in thaws) / 1_000_000
+            grand_total_alloc += w_total_alloc
+            
+            # --- 2. กรองเฉพาะยอดที่ยังไม่เคลม (Active Thaws) ---
             active_thaws = [t for t in thaws if not t.get('transaction_id')]
-            # -------------------------------------------------------------
             
-            sum_amt = sum(t['amount'] for t in active_thaws) / 1_000_000
-            
-            if sum_amt > 0:
-                total_night += sum_amt
-                if w_name not in wallets_data: wallets_data[w_name] = {"total": 0, "addrs": {}}
-                wallets_data[w_name]["total"] += sum_amt
+            # ถ้ามียอด (ไม่ว่าจะเคลมแล้วหรือยัง) ให้เก็บข้อมูลไว้โชว์
+            if w_total_alloc > 0:
+                if w_name not in wallets_data: 
+                    wallets_data[w_name] = {"total_alloc": 0, "addrs": {}}
                 
-                addr_info = {"amt": sum_amt, "claims": []}
-                # วนลูปเฉพาะ active_thaws แทน thaws ทั้งหมด
+                wallets_data[w_name]["total_alloc"] += w_total_alloc
+                
+                addr_info = {"total_alloc": w_total_alloc, "claims": []}
+                
+                # Loop เฉพาะ active thaws เพื่อแจ้งเตือนและแสดงในตาราง (ตามที่ขอ)
                 for t in active_thaws:
-                    # คำนวณเวลาใหม่ทุกครั้งที่เปิดหน้าเว็บ (เผื่อวันเปลี่ยน)
                     time_data = process_claim_time(t['thawing_period_start'])
                     amt = t['amount'] / 1_000_000
                     
@@ -233,9 +249,16 @@ else:
     # --- แสดงผล Cards ---
     st.divider()
     m1, m2, m3 = st.columns(3)
-    m1.markdown(f'<div class="metric-card"><h5>🌙 NIGHT ที่เหลืออยู่</h5><h2>{total_night:,.2f}</h2></div>', unsafe_allow_html=True)
+    
+    # Card 1: โชว์ยอดทั้งหมด
+    m1.markdown(f'<div class="metric-card"><h5>🌙 NIGHT ทั้งหมด</h5><h2>{grand_total_alloc:,.2f}</h2></div>', unsafe_allow_html=True)
+    
+    # Card 2: ราคา
     m2.markdown(f'<div class="metric-card price-card"><h5>📈 ราคา (Real-time)</h5><h2 style="color:#856404">฿{p_thb:,.4f}</h2><small>${p_usd:,.4f}</small></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="metric-card value-card"><h5>💰 มูลค่าคงเหลือ (บาท)</h5><h2>฿{total_night * p_thb:,.2f}</h2></div>', unsafe_allow_html=True)
+    
+    # Card 3: มูลค่ารวม (คิดจากยอดทั้งหมด)
+    grand_value = grand_total_alloc * p_thb
+    m3.markdown(f'<div class="metric-card value-card"><h5>💰 มูลค่ารวม (บาท)</h5><h2>฿{grand_value:,.2f}</h2></div>', unsafe_allow_html=True)
 
     # --- แจ้งเตือนด่วน ---
     if urgent_items:
@@ -249,17 +272,28 @@ else:
 
     # --- รายละเอียด ---
     st.subheader("📂 รายละเอียดกระเป๋า (ยอดที่ยังไม่เคลม)")
-    for w_name, data in sorted(wallets_data.items(), key=lambda x: x[1]['total'], reverse=True):
-        val = data['total'] * p_thb
-        with st.expander(f"💼 {w_name} | {data['total']:,.2f} NIGHT (฿{val:,.2f})"):
+    for w_name, data in sorted(wallets_data.items(), key=lambda x: x[1]['total_alloc'], reverse=True):
+        # คำนวณมูลค่าของยอดทั้งหมดในกระเป๋านั้น
+        val = data['total_alloc'] * p_thb
+        with st.expander(f"💼 {w_name} | ทั้งหมด: {data['total_alloc']:,.2f} NIGHT (฿{val:,.2f})"):
+            
+            # --- ปุ่มกดเคลม ---
+            st.markdown(f"""
+            <a href="{REDEEM_URL}" target="_blank" class="redeem-btn">
+                👉 ไปที่หน้ากดเคลม (Redeem Site)
+            </a>
+            """, unsafe_allow_html=True)
+            # ----------------
+            
             for addr, info in data['addrs'].items():
                 claims = sorted(info['claims'], key=lambda x: x['sort'])
-                if claims: # แสดงเฉพาะถ้ามีรายการเหลือ
+                if claims: # แสดงเฉพาะถ้ามีรายการเหลือ (Active)
                     nearest = claims[0] 
                     
                     c1, c2, c3 = st.columns([3, 2, 2])
                     c1.text(f"{addr}")
-                    c2.markdown(f"**{info['amt']:,.2f}** NIGHT")
+                    # แสดงยอดรวมของ Address นี้ (Alloc) เพื่อความสอดคล้อง
+                    c2.markdown(f"**ทั้งหมด: {info['total_alloc']:,.2f}** NIGHT")
                     
                     s_color = "green" if nearest.get('status_code') == 'ready' else "red" if nearest.get('status_code') == 'urgent' else "gray"
                     c3.markdown(f"<span style='color:{s_color}'><b>{nearest.get('status_text', '-')}</b></span>", unsafe_allow_html=True)
