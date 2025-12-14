@@ -8,7 +8,7 @@ import requests
 import json
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
-st.set_page_config(page_title="NIGHT Tracker (Remaining Only)", page_icon="🌙", layout="wide")
+st.set_page_config(page_title="NIGHT Tracker (Total vs Remaining)", page_icon="🌙", layout="wide")
 
 # ==============================================================================
 # ⚙️ CONFIG & KEY
@@ -28,6 +28,7 @@ st.markdown("""
     }
     .price-card { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
     .value-card { background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
+    .total-card { background-color: #e2e3e5; color: #383d41; border: 1px solid #d6d8db; }
     .stAlert {margin-top: 10px;}
     .update-btn { margin-bottom: 20px; }
 </style>
@@ -132,7 +133,7 @@ async def update_database(df):
 # ==============================================================================
 # 🖥️ MAIN UI
 # ==============================================================================
-st.title("🌙 NIGHT Tracker (เฉพาะยอดที่ยังเหลือ)")
+st.title("🌙 NIGHT Tracker (Total vs Remaining)")
 
 col_top1, col_top2 = st.columns([3, 1])
 
@@ -179,7 +180,9 @@ else:
         p_usd, p_thb = get_market_price()
 
     # 3. ประมวลผล
-    total_night = 0
+    grand_total_alloc = 0    # ยอดทั้งหมด (รวมที่เคลมไปแล้ว)
+    grand_total_remaining = 0 # ยอดที่เหลือ (ยังไม่เคลม)
+    
     wallets_data = {}
     urgent_items = []
     
@@ -190,20 +193,27 @@ else:
             w_name = item['wallet']
             addr = item['address']
             
-            # --- จุดแก้ไขสำคัญ: กรองเอาเฉพาะอันที่ยังไม่มี Transaction ID (ยังไม่เคลม) ---
+            # --- 1. คำนวณยอดทั้งหมด (Total Allocation) ---
+            w_total_alloc = sum(t['amount'] for t in thaws) / 1_000_000
+            grand_total_alloc += w_total_alloc
+            
+            # --- 2. คำนวณยอดคงเหลือ (Remaining - ยังไม่มี Tx ID) ---
             active_thaws = [t for t in thaws if not t.get('transaction_id')]
-            # -------------------------------------------------------------------
+            w_total_remaining = sum(t['amount'] for t in active_thaws) / 1_000_000
+            grand_total_remaining += w_total_remaining
             
-            sum_amt = sum(t['amount'] for t in active_thaws) / 1_000_000
-            
-            if sum_amt > 0:
-                total_night += sum_amt
-                if w_name not in wallets_data: wallets_data[w_name] = {"total": 0, "addrs": {}}
-                wallets_data[w_name]["total"] += sum_amt
+            # เก็บข้อมูลลง Dictionary เพื่อแสดงผล
+            if w_total_alloc > 0:
+                if w_name not in wallets_data: 
+                    wallets_data[w_name] = {"alloc": 0, "remaining": 0, "addrs": {}}
                 
-                addr_info = {"amt": sum_amt, "claims": []}
+                wallets_data[w_name]["alloc"] += w_total_alloc
+                wallets_data[w_name]["remaining"] += w_total_remaining
+                
+                addr_info = {"alloc": w_total_alloc, "remaining": w_total_remaining, "claims": []}
+                
+                # Loop เฉพาะ active thaws เพื่อใส่ตาราง (ตามที่ขอว่าให้แสดงเฉพาะยอดที่ยังไม่เคลมในตาราง)
                 for t in active_thaws:
-                    # คำนวณเวลาใหม่ทุกครั้งที่เปิดหน้าเว็บ (เผื่อวันเปลี่ยน)
                     time_data = process_claim_time(t['thawing_period_start'])
                     amt = t['amount'] / 1_000_000
                     
@@ -228,12 +238,17 @@ else:
                 
                 wallets_data[w_name]["addrs"][addr] = addr_info
 
-    # --- แสดงผล Cards ---
+    # --- แสดงผล Cards (เพิ่มการ์ด "ทั้งหมด") ---
     st.divider()
-    m1, m2, m3 = st.columns(3)
-    m1.markdown(f'<div class="metric-card"><h5>🌙 NIGHT ที่เหลืออยู่</h5><h2>{total_night:,.2f}</h2></div>', unsafe_allow_html=True)
-    m2.markdown(f'<div class="metric-card price-card"><h5>📈 ราคา (Real-time)</h5><h2 style="color:#856404">฿{p_thb:,.4f}</h2><small>${p_usd:,.4f}</small></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="metric-card value-card"><h5>💰 มูลค่าคงเหลือ (บาท)</h5><h2>฿{total_night * p_thb:,.2f}</h2></div>', unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    
+    m1.markdown(f'<div class="metric-card total-card"><h5>📦 NIGHT ทั้งหมด (Alloc)</h5><h2>{grand_total_alloc:,.2f}</h2></div>', unsafe_allow_html=True)
+    m2.markdown(f'<div class="metric-card"><h5>⏳ NIGHT ที่เหลือ</h5><h2>{grand_total_remaining:,.2f}</h2></div>', unsafe_allow_html=True)
+    
+    val_remaining = grand_total_remaining * p_thb
+    m3.markdown(f'<div class="metric-card value-card"><h5>💰 มูลค่าที่เหลือ (บาท)</h5><h2>฿{val_remaining:,.2f}</h2></div>', unsafe_allow_html=True)
+    
+    m4.markdown(f'<div class="metric-card price-card"><h5>📈 ราคา (Real-time)</h5><h2 style="color:#856404">฿{p_thb:,.4f}</h2><small>${p_usd:,.4f}</small></div>', unsafe_allow_html=True)
 
     # --- แจ้งเตือนด่วน ---
     if urgent_items:
@@ -246,23 +261,27 @@ else:
         )
 
     # --- รายละเอียด ---
-    st.subheader("📂 รายละเอียดกระเป๋า (เฉพาะยอดที่ยังไม่เคลม)")
-    for w_name, data in sorted(wallets_data.items(), key=lambda x: x[1]['total'], reverse=True):
-        val = data['total'] * p_thb
-        with st.expander(f"💼 {w_name} | เหลือ: {data['total']:,.2f} NIGHT (฿{val:,.2f})"):
+    st.subheader("📂 รายละเอียดกระเป๋า (ยอดเหลือ / ยอดทั้งหมด)")
+    # เรียงลำดับตามยอดคงเหลือมากที่สุดก่อน
+    for w_name, data in sorted(wallets_data.items(), key=lambda x: x[1]['remaining'], reverse=True):
+        val = data['remaining'] * p_thb
+        # แสดงทั้งยอดเหลือและยอดรวมในหัวข้อ
+        header_text = f"💼 {w_name} | เหลือ: {data['remaining']:,.2f} / ทั้งหมด: {data['alloc']:,.2f} NIGHT (฿{val:,.2f})"
+        
+        with st.expander(header_text):
             for addr, info in data['addrs'].items():
                 claims = sorted(info['claims'], key=lambda x: x['sort'])
-                if claims:
+                if claims: # แสดงเฉพาะถ้ามีรายการเหลือ
                     nearest = claims[0]
                     
                     c1, c2, c3 = st.columns([3, 2, 2])
                     c1.text(f"{addr}")
-                    c2.markdown(f"**{info['amt']:,.2f}** NIGHT")
+                    c2.markdown(f"**เหลือ: {info['remaining']:,.2f}** (จาก {info['alloc']:,.2f})")
                     
                     s_color = "green" if nearest.get('status_code') == 'ready' else "red" if nearest.get('status_code') == 'urgent' else "gray"
                     c3.markdown(f"<span style='color:{s_color}'><b>{nearest.get('status_text', '-')}</b></span>", unsafe_allow_html=True)
                     
                     df_sub = pd.DataFrame(claims)[["date_str", "amount", "status_text"]]
-                    df_sub.columns = ["วันที่ปลดล็อค", "จำนวน", "สถานะ"]
-                    st.dataframe(df_sub.style.format({"จำนวน": "{:,.2f}"}), use_container_width=True, hide_index=True)
+                    df_sub.columns = ["วันที่ปลดล็อค", "จำนวน (ที่เหลือ)", "สถานะ"]
+                    st.dataframe(df_sub.style.format({"จำนวน (ที่เหลือ)": "{:,.2f}"}), use_container_width=True, hide_index=True)
                     st.markdown("---")
