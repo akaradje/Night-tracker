@@ -259,14 +259,29 @@ else:
         
         with st.expander(head):
             st.markdown(f"""<a href="{REDEEM_URL}" target="_blank" class="redeem-btn">👉 ไปที่หน้ากดเคลม (Redeem Site)</a>""", unsafe_allow_html=True)
-            for addr, info in data['addrs'].items():
-                if info['claims']: # Show only if remaining
-                    c1, c2, c3 = st.columns([3, 2, 2])
-                    c1.text(f"{addr}")
-                    c2.markdown(f"**เหลือ: {info['remaining']:,.2f}**")
-                    c3.markdown(f"<span style='color:green'><b>{info['claims'][0]['status_text']}</b></span>", unsafe_allow_html=True)
-                    
-                    df_sub = pd.DataFrame(info['claims'])[["date_str", "amount", "status_text"]]
-                    df_sub.columns = ["วันที่", "จำนวน", "สถานะ"]
-                    st.dataframe(df_sub.style.format({"จำนวน": "{:,.2f}"}), use_container_width=True, hide_index=True)
-                    st.markdown("---")
+            
+            # --- START EDIT: Sorting Logic (เอาตัวที่เคลมได้/ใกล้เคลม ขึ้นก่อน) ---
+            # 1. กรองเฉพาะ address ที่มีรายการค้าง (ถ้าไม่มีค้าง info['claims'] จะว่าง)
+            valid_addrs = [item for item in data['addrs'].items() if item[1]['claims']]
+            
+            # 2. เรียงลำดับ โดยดูจาก "sort" ของรายการแรกสุดใน address นั้น (ค่ายิ่งน้อย ยิ่งด่วน)
+            # sort < 0 คือเคลมได้แล้ว, sort น้อยๆ คือใกล้ถึงเวลา
+            sorted_addrs = sorted(valid_addrs, key=lambda x: min(c['sort'] for c in x[1]['claims']))
+
+            for addr, info in sorted_addrs:
+            # --- END EDIT ---
+            
+                c1, c2, c3 = st.columns([3, 2, 2])
+                c1.text(f"{addr}")
+                c2.markdown(f"**เหลือ: {info['remaining']:,.2f}**")
+                
+                # แสดงสถานะของรายการที่ด่วนที่สุด
+                top_status = info['claims'][0]['status_text'] # เนื่องจากเรา sort ตอนเตรียมข้อมูลไม่ได้ แต่ในนี้คือ list
+                # เพื่อความชัวร์ เรียง claims ใน address ด้วยก็ได้ แต่ปกติมันมาตามลำดับเวลาอยู่แล้ว
+                
+                c3.markdown(f"<span style='color:green'><b>{top_status}</b></span>", unsafe_allow_html=True)
+                
+                df_sub = pd.DataFrame(info['claims'])[["date_str", "amount", "status_text"]]
+                df_sub.columns = ["วันที่", "จำนวน", "สถานะ"]
+                st.dataframe(df_sub.style.format({"จำนวน": "{:,.2f}"}), use_container_width=True, hide_index=True)
+                st.markdown("---")
