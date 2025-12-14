@@ -11,10 +11,12 @@ import json
 st.set_page_config(page_title="NIGHT Tracker (Offline Mode)", page_icon="🌙", layout="wide")
 
 # ==============================================================================
-# ⚙️ CONFIG
+# ⚙️ CONFIG & KEY
 # ==============================================================================
-CACHE_FILE = "vesting_data.json"  # ไฟล์สำหรับบันทึกข้อมูล Vesting เก็บไว้
+CACHE_FILE = "vesting_data.json"  # ไฟล์สำหรับบันทึกข้อมูล
 TOKEN_ADDRESS = "0xfe930c2d63aed9b82fc4dbc801920dd2c1a3224f" # Contract NIGHT
+# ใส่ Key ของคุณให้แล้วครับ
+MY_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6ImZlMWU5MjhhLWE1YjMtNDc3OC04ZjE4LTFlODZhYjcyZTQ2NiIsIm9yZ0lkIjoiMjU3NjgzIiwidXNlcklkIjoiMjYxNjQyIiwidHlwZUlkIjoiMmNiZDhhNzUtNDk3Yi00ZTRhLWI2YmQtYmQzNTc4ODY4MjAyIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjUyNzU1MzUsImV4cCI6NDkyMTAzNTUzNX0.sLbHogFDbXQ0TGm5VXPD7DWg1f22ztUnqR8LzfGAUoM"
 # ==============================================================================
 
 # CSS แต่งสวย
@@ -41,19 +43,17 @@ def get_market_price():
         if r.status_code == 200: thb_rate = r.json().get("rates", {}).get("THB", 34.0)
     except: pass
 
-    # 2. ราคาเหรียญ (USD)
+    # 2. ราคาเหรียญ (USD) โดยใช้ Key ของคุณ
     usd_price = 0
     try:
-        # ใช้ API สาธารณะหรือ DexScreener (ไม่ต้องใช้ Key ก็ได้ถ้า Moralis ยุ่งยาก)
-        # หรือถ้ามี Moralis Key ให้ใส่ Header กลับมา
         url = f"https://deep-index.moralis.io/api/v2/erc20/{TOKEN_ADDRESS}/price?chain=bsc"
-        # ใส่ Key ของคุณตรงนี้ถ้าจะใช้ Moralis
-        MORALIS_KEY = "YOUR_KEY_HERE" 
-        if "YOUR_KEY" not in MORALIS_KEY:
-            headers = {"X-API-Key": MORALIS_KEY}
-            r = requests.get(url, headers=headers, timeout=3)
-            if r.status_code == 200: usd_price = r.json().get("usdPrice", 0)
-    except: pass
+        headers = {"X-API-Key": MY_API_KEY} # ใช้ Key ตรงนี้
+        
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200: 
+            usd_price = r.json().get("usdPrice", 0)
+    except Exception as e: 
+        print(f"Price Error: {e}")
     
     return usd_price, usd_price * thb_rate
 
