@@ -8,15 +8,15 @@ import requests
 import json
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
-st.set_page_config(page_title="NIGHT Tracker (Remaining Only)", page_icon="🌙", layout="wide")
+st.set_page_config(page_title="NIGHT Tracker (Offline Mode)", page_icon="🌙", layout="wide")
 
 # ==============================================================================
 # ⚙️ CONFIG & KEY
 # ==============================================================================
 CACHE_FILE = "vesting_data.json"  # ไฟล์สำหรับบันทึกข้อมูล
 TOKEN_ADDRESS = "0xfe930c2d63aed9b82fc4dbc801920dd2c1a3224f" # Contract NIGHT
+# ใส่ Key ของคุณให้แล้วครับ
 MY_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6ImZlMWU5MjhhLWE1YjMtNDc3OC04ZjE4LTFlODZhYjcyZTQ2NiIsIm9yZ0lkIjoiMjU3NjgzIiwidXNlcklkIjoiMjYxNjQyIiwidHlwZUlkIjoiMmNiZDhhNzUtNDk3Yi00ZTRhLWI2YmQtYmQzNTc4ODY4MjAyIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjUyNzU1MzUsImV4cCI6NDkyMTAzNTUzNX0.sLbHogFDbXQ0TGm5VXPD7DWg1f22ztUnqR8LzfGAUoM"
-REDEEM_URL = "https://redeem.midnight.gd/" # ลิงก์หน้าเคลม
 # ==============================================================================
 
 # CSS แต่งสวย
@@ -31,18 +31,6 @@ st.markdown("""
     .value-card { background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
     .stAlert {margin-top: 10px;}
     .update-btn { margin-bottom: 20px; }
-    
-    /* ปุ่มกดเคลมสวยๆ */
-    .redeem-btn {
-        display: inline-block;
-        background-color: #6f42c1; color: white !important;
-        padding: 8px 20px; border-radius: 6px;
-        text-decoration: none; font-weight: bold;
-        margin-bottom: 15px; text-align: center;
-        width: 100%;
-        transition: background-color 0.3s;
-    }
-    .redeem-btn:hover { background-color: #5a32a3; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -145,7 +133,7 @@ async def update_database(df):
 # ==============================================================================
 # 🖥️ MAIN UI
 # ==============================================================================
-st.title("🌙 NIGHT Tracker (เฉพาะยอดที่ยังเหลือ)")
+st.title("🌙 NIGHT Tracker (Saved Data Mode)")
 
 col_top1, col_top2 = st.columns([3, 1])
 
@@ -203,9 +191,9 @@ else:
             w_name = item['wallet']
             addr = item['address']
             
-            # --- จุดแก้ไขสำคัญ: กรองเอาเฉพาะอันที่ยังไม่มี Transaction ID (ยังไม่เคลม) ---
+            # --- แก้ไขตรงนี้: กรองเฉพาะอันที่ไม่มี Transaction ID (ยังไม่เคลม) ---
             active_thaws = [t for t in thaws if not t.get('transaction_id')]
-            # -------------------------------------------------------------------
+            # -------------------------------------------------------------
             
             sum_amt = sum(t['amount'] for t in active_thaws) / 1_000_000
             
@@ -215,6 +203,7 @@ else:
                 wallets_data[w_name]["total"] += sum_amt
                 
                 addr_info = {"amt": sum_amt, "claims": []}
+                # วนลูปเฉพาะ active_thaws แทน thaws ทั้งหมด
                 for t in active_thaws:
                     # คำนวณเวลาใหม่ทุกครั้งที่เปิดหน้าเว็บ (เผื่อวันเปลี่ยน)
                     time_data = process_claim_time(t['thawing_period_start'])
@@ -259,23 +248,14 @@ else:
         )
 
     # --- รายละเอียด ---
-    st.subheader("📂 รายละเอียดกระเป๋า (เฉพาะยอดที่ยังไม่เคลม)")
+    st.subheader("📂 รายละเอียดกระเป๋า (ยอดที่ยังไม่เคลม)")
     for w_name, data in sorted(wallets_data.items(), key=lambda x: x[1]['total'], reverse=True):
         val = data['total'] * p_thb
-        with st.expander(f"💼 {w_name} | เหลือ: {data['total']:,.2f} NIGHT (฿{val:,.2f})"):
-            
-            # --- ปุ่มกดเคลม ---
-            st.markdown(f"""
-            <a href="{REDEEM_URL}" target="_blank" class="redeem-btn">
-                👉 ไปที่หน้ากดเคลม (Redeem Site)
-            </a>
-            """, unsafe_allow_html=True)
-            # ----------------
-            
+        with st.expander(f"💼 {w_name} | {data['total']:,.2f} NIGHT (฿{val:,.2f})"):
             for addr, info in data['addrs'].items():
                 claims = sorted(info['claims'], key=lambda x: x['sort'])
-                if claims:
-                    nearest = claims[0]
+                if claims: # แสดงเฉพาะถ้ามีรายการเหลือ
+                    nearest = claims[0] 
                     
                     c1, c2, c3 = st.columns([3, 2, 2])
                     c1.text(f"{addr}")
