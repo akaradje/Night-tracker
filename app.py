@@ -8,7 +8,7 @@ import requests
 import json
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
-st.set_page_config(page_title="NIGHT Tracker (Complete)", page_icon="🌙", layout="wide")
+st.set_page_config(page_title="NIGHT Tracker (Unified)", page_icon="🌙", layout="wide")
 
 # ==============================================================================
 # ⚙️ CONFIG & KEY
@@ -19,12 +19,12 @@ MY_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6ImZlMWU5MjhhLWE1Y
 REDEEM_URL = "https://redeem.midnight.gd/"
 # ==============================================================================
 
-# CSS Styling
+# CSS Styling (Official Look)
 st.markdown("""
 <style>
-    /* Card Style like Official */
+    /* Card Container */
     .card-container {
-        border: 1px solid #e0e0e0; border-radius: 12px; margin-bottom: 20px;
+        border: 1px solid #e0e0e0; border-radius: 12px; margin-bottom: 0px;
         background-color: white; overflow: hidden;
     }
     .thaw-header {
@@ -46,15 +46,15 @@ st.markdown("""
     .detail-label { color: #666; }
     .detail-val { font-weight: 600; color: #333; }
     
-    /* Buttons & Links */
-    .redeem-link {
+    /* Button */
+    .redeem-btn {
         display: inline-block; width: 100%; text-align: center;
-        background-color: #6f42c1; color: white !important; padding: 8px; 
+        background-color: #6f42c1; color: white !important; padding: 10px; 
         border-radius: 6px; text-decoration: none; font-weight: bold; margin-top: 10px;
+        transition: background 0.3s;
     }
-    .redeem-link:hover { background-color: #5a32a3; }
-
-    /* Alert Box */
+    .redeem-btn:hover { background-color: #5a32a3; }
+    
     .stAlert { margin-top: 10px; margin-bottom: 20px; }
 </style>
 """, unsafe_allow_html=True)
@@ -144,11 +144,11 @@ async def update_database(df):
 # ==============================================================================
 # MAIN UI
 # ==============================================================================
-st.title("🌙 NIGHT Tracker (Complete)")
+st.title("🌙 NIGHT Tracker (Wallet Grouped)")
 
 col_top1, col_top2 = st.columns([3, 1])
 
-# โหลดไฟล์กระเป๋า
+# โหลดไฟล์
 df_input = None
 if os.path.exists('wallets.xlsx'): df_input = pd.read_excel('wallets.xlsx')
 elif os.path.exists('active_wallets.csv'): df_input = pd.read_csv('active_wallets.csv')
@@ -174,130 +174,157 @@ else:
     with st.spinner("..เช็คราคา.."):
         p_usd, p_thb = get_market_price()
 
-    # --- ส่วนคำนวณ Global ---
+    # --- ส่วนคำนวณ & จัดกลุ่ม (Grouping Logic) ---
+    grouped_wallets = {} # เก็บข้อมูลแบบรวม: {'Wallet 1': {total_redeemable: 0, ...}}
+    urgent_list = []
+    
     grand_redeemable = 0
     grand_left = 0
     grand_total = 0
-    urgent_list = []
 
-    # วนลูปเพื่อคำนวณยอดรวมและหา Alert
+    # 1. วนลูปข้อมูลดิบ -> จัดเข้ากลุ่มตามชื่อ Wallet
     for item in cached.get("wallets", []):
         if item.get('status') == 'ok':
-            thaws = item['data'].get('thaws', [])
             w_name = item['wallet']
             addr = item['address']
+            thaws = item['data'].get('thaws', [])
+            
+            # สร้างกลุ่มถ้ายังไม่มี
+            if w_name not in grouped_wallets:
+                grouped_wallets[w_name] = {
+                    'alloc': 0, 'redeemed': 0, 'left': 0, 'ready': 0,
+                    'addresses': [], 'claims_history': [],
+                    'thaws_total': 0, 'thaws_redeemed': 0, 'next_unlock': None
+                }
+            
+            # คำนวณยอดของ Address นี้
             for t in thaws:
                 amt = t['amount'] / 1_000_000
                 info = process_claim_status(t['thawing_period_start'], t.get('transaction_id'))
                 
-                grand_total += amt
-                if info['status'] == 'ready': grand_redeemable += amt
-                if info['status'] != 'redeemed': grand_left += amt
+                # บวกยอดเข้ากลุ่ม
+                grouped_wallets[w_name]['alloc'] += amt
                 
+                # นับงวด (Thaws count)
+                grouped_wallets[w_name]['thaws_total'] += 1
+                
+                if info['status'] == 'redeemed':
+                    grouped_wallets[w_name]['redeemed'] += amt
+                    grouped_wallets[w_name]['thaws_redeemed'] += 1
+                else:
+                    grouped_wallets[w_name]['left'] += amt
+                    if info['status'] == 'ready':
+                        grouped_wallets[w_name]['ready'] += amt
+                    elif info['status'] == 'locked':
+                        # เก็บวันที่ปลดล็อคที่ใกล้ที่สุดของกลุ่มนี้
+                        current_next = grouped_wallets[w_name]['next_unlock']
+                        if current_next is None or (info['date'] and info['date'] < current_next):
+                            grouped_wallets[w_name]['next_unlock'] = info['date']
+
+                # เก็บ Alert
                 if info['urgent']:
                     urgent_list.append({
-                        "Wallet": w_name,
-                        "Address": addr,
-                        "Amount": amt,
-                        "Value (THB)": amt * p_thb,
-                        "Status": info['text'],
-                        "Date": info['date'].strftime('%d/%m') if info['date'] else "-",
-                        "_sort": info['sort']
+                        "Wallet": w_name, "Amount": amt, "Value (THB)": amt * p_thb,
+                        "Status": info['text'], "Date": info['date'].strftime('%d/%m') if info['date'] else "-"
                     })
+                
+                # เก็บ History
+                grouped_wallets[w_name]['claims_history'].append({
+                    "Date": info['date'].strftime('%d/%m/%Y') if info['date'] else "-",
+                    "Amount": amt, "Status": info['text'], "_sort": info['sort'], "Address": addr
+                })
 
-    # --- 1. Metrics ด้านบน (ยอดรวม) ---
+            grouped_wallets[w_name]['addresses'].append(addr)
+
+    # 2. คำนวณ Grand Total (ยอดรวมทั้งพอร์ต)
+    for w_name, data in grouped_wallets.items():
+        grand_total += data['alloc']
+        grand_redeemable += data['ready']
+        grand_left += data['left']
+
+    # --- แสดงผล Dashboard ---
+
+    # 1. Metrics ด้านบน
     m1, m2, m3 = st.columns(3)
     m1.metric("🟣 พร้อมถอน (Now)", f"{grand_redeemable:,.2f}", f"฿{grand_redeemable*p_thb:,.2f}")
     m2.metric("⏳ เหลือ (Left)", f"{grand_left:,.2f}", f"฿{grand_left*p_thb:,.2f}")
     m3.metric("📦 ทั้งหมด (Alloc)", f"{grand_total:,.2f}", f"฿{grand_total*p_thb:,.2f}")
 
-    # --- 2. Alert Box (สีแดง) ---
+    # 2. Alert Box
     if urgent_list:
-        st.error(f"🚨 แจ้งเตือนด่วน: พบ {len(urgent_list)} รายการต้องเคลม (ภายใน 7 วัน)")
-        df_urg = pd.DataFrame(urgent_list).sort_values("_sort").drop(columns=["_sort"])
-        st.dataframe(
-            df_urg.style.format({"Amount": "{:,.2f}", "Value (THB)": "฿{:,.2f}"})
-            .map(lambda x: "color: green; font-weight: bold" if "🟣" in str(x) else "color: red", subset=["Status"]),
-            use_container_width=True, hide_index=True
-        )
+        st.error(f"🚨 แจ้งเตือนด่วน: พบ {len(urgent_list)} รายการต้องเคลม")
 
     st.divider()
+    st.subheader("📂 รายละเอียดรายกระเป๋า (รวมยอด)")
 
-    # --- 3. รายละเอียดกระเป๋า (Accordion Style) ---
-    st.subheader("📂 รายละเอียดรายกระเป๋า (จากข้อมูลที่บันทึกไว้)")
-    
-    # วนลูปแสดงกระเป๋า (ซ่อนรายละเอียดไว้ใน Expander)
-    for item in cached.get("wallets", []):
-        if item.get('status') == 'ok':
-            w_name = item['wallet']
-            address = item['address']
-            thaws = item['data'].get('thaws', [])
-            
-            # คำนวณยอดเฉพาะกระเป๋านี้
-            w_redeemable = sum(t['amount']/1000000 for t in thaws if process_claim_status(t['thawing_period_start'], t.get('transaction_id'))['status'] == 'ready')
-            w_total_left = sum(t['amount']/1000000 for t in thaws if process_claim_status(t['thawing_period_start'], t.get('transaction_id'))['status'] != 'redeemed')
-            
-            # ไอคอนสถานะหน้าชื่อกระเป๋า
-            status_icon = "🟢" if w_redeemable > 0 else "⚪"
-            
-            # >>> EXPANDER: กดเพื่อดูไส้ใน <<<
-            with st.expander(f"{status_icon} {w_name} | พร้อมถอน: {w_redeemable:,.2f} NIGHT (฿{w_redeemable*p_thb:,.0f})", expanded=False):
-                
-                # แสดง Address และ Card แบบ Official ข้างในนี้
-                st.markdown(f"**Address:** `{address}`")
-                
-                # --- สร้าง Card Official ---
-                total_thaws = len(thaws)
-                redeemed_count = 0
-                w_redeemed = 0
-                w_alloc = 0
-                claims_data = []
-                next_date = None
+    # 3. วนลูปแสดง Card (ตามรายชื่อ Wallet ที่รวมยอดแล้ว)
+    for w_name, data in grouped_wallets.items():
+        
+        # คำนวณสถานะของกลุ่ม
+        w_ready = data['ready']
+        w_redeemed = data['redeemed']
+        w_left = data['left']
+        w_alloc = data['alloc']
+        
+        # Logic งวด: เอาจำนวนงวดที่เคลมแล้ว หารด้วย จำนวน Address เพื่อหาว่าเฉลี่ยไปถึงงวดไหนแล้ว
+        # (สมมติทุก Address มีจำนวนงวดเท่ากัน)
+        addr_count = len(data['addresses']) if len(data['addresses']) > 0 else 1
+        # งวดปัจจุบัน = (จำนวน Tx ที่เคลมแล้วทั้งหมด / จำนวนกระเป๋า) + 1
+        curr_thaw = int((data['thaws_redeemed'] / addr_count)) + 1
+        total_thaws_per_addr = int(data['thaws_total'] / addr_count)
+        if curr_thaw > total_thaws_per_addr: curr_thaw = total_thaws_per_addr
 
-                for t in thaws:
-                    amt = t['amount'] / 1_000_000
-                    w_alloc += amt
-                    info = process_claim_status(t['thawing_period_start'], t.get('transaction_id'))
-                    
-                    if info['status'] == 'redeemed':
-                        w_redeemed += amt
-                        redeemed_count += 1
-                    elif info['status'] == 'locked':
-                        if next_date is None or (info['date'] and info['date'] < next_date):
-                            next_date = info['date']
-                    
-                    claims_data.append({"Date": info['date'].strftime('%d/%m/%Y') if info['date'] else "-", "Amount": amt, "Status": info['text'], "_sort": info['sort']})
+        # Countdown logic
+        countdown = "Completed"
+        if w_ready > 0: countdown = "Available Now!"
+        elif data['next_unlock']:
+            diff = data['next_unlock'] - (datetime.utcnow()+timedelta(hours=7))
+            countdown = f"Thaws in: {diff.days} days"
 
-                curr_thaw = min(redeemed_count + 1, total_thaws)
-                countdown = "Available Now!" if w_redeemable > 0 else f"Thaws in: {(next_date - (datetime.utcnow()+timedelta(hours=7))).days} days" if next_date else "Completed"
-                
-                # HTML Card Structure
-                st.markdown(f"""
-                <div class="card-container">
-                    <div class="thaw-header">
-                        <span>Current thaw: {curr_thaw}/{total_thaws}</span>
-                        <span style="font-size:0.9em; color:#555;">{countdown}</span>
-                    </div>
-                    <div class="card-body">
-                        <div class="purple-box">
-                            <small>Redeemable now:</small>
-                            <h2>{w_redeemable:,.2f} NIGHT</h2>
-                            <small>≈ ฿{w_redeemable * p_thb:,.2f}</small>
-                            <br>
-                            <a href="{REDEEM_URL}" target="_blank" class="redeem-link">👉 ไปที่หน้ากดเคลม (Redeem Site)</a>
-                        </div>
-                        <div class="detail-row"><span class="detail-label">Redeemed so far:</span> <span class="detail-val">{w_redeemed:,.2f}</span></div>
-                        <div class="detail-row"><span class="detail-label">Total left to redeem:</span> <span class="detail-val">{w_total_left:,.2f}</span></div>
-                        <div class="detail-row"><span class="detail-label">Total allocation size:</span> <span class="detail-val">{w_alloc:,.2f}</span></div>
-                    </div>
+        # ไอคอนสถานะ
+        icon = "🟢" if w_ready > 0 else "⚪"
+        price_val = w_ready * p_thb
+
+        # --- EXPANDER (กดเพื่อดูไส้ใน) ---
+        with st.expander(f"{icon} {w_name} | พร้อมถอน: {w_ready:,.2f} NIGHT (฿{price_val:,.0f})", expanded=False):
+            
+            # แสดง Address ทั้งหมดในกลุ่มนี้
+            st.markdown(f"**Addresses ({addr_count}):**")
+            for ad in data['addresses']:
+                st.code(ad)
+
+            # --- OFFICIAL CARD UI ---
+            st.markdown(f"""
+            <div class="card-container">
+                <div class="thaw-header">
+                    <span>Current thaw: ~{curr_thaw}/{total_thaws_per_addr}</span>
+                    <span style="font-size:0.9em; color:#555;">{countdown}</span>
                 </div>
-                """, unsafe_allow_html=True)
-                
-                # Table Data
-                st.caption("Transactions:")
-                df_show = pd.DataFrame(claims_data).sort_values("_sort")
-                def color_row(val):
-                    if "✅" in str(val): return 'color: green'
-                    if "🟣" in str(val): return 'color: purple; font-weight: bold'
-                    return 'color: gray'
-                st.dataframe(df_show[['Date', 'Amount', 'Status']].style.applymap(color_row, subset=['Status']), use_container_width=True, hide_index=True)
+                <div class="card-body">
+                    <div class="purple-box">
+                        <small>Redeemable now:</small>
+                        <h2>{w_ready:,.2f} NIGHT</h2>
+                        <small>≈ ฿{price_val:,.2f}</small>
+                        <br>
+                        <a href="{REDEEM_URL}" target="_blank" class="redeem-btn">👉 ไปที่หน้ากดเคลม (Redeem Site)</a>
+                    </div>
+                    <div class="detail-row"><span class="detail-label">Redeemed so far:</span> <span class="detail-val">{w_redeemed:,.2f}</span></div>
+                    <div class="detail-row"><span class="detail-label">Total left to redeem:</span> <span class="detail-val">{w_left:,.2f}</span></div>
+                    <div class="detail-row"><span class="detail-label">Total allocation size:</span> <span class="detail-val">{w_alloc:,.2f}</span></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Table Data
+            st.caption("Transactions List:")
+            df_show = pd.DataFrame(data['claims_history']).sort_values("_sort")
+            
+            def color_row(val):
+                if "✅" in str(val): return 'color: green'
+                if "🟣" in str(val): return 'color: purple; font-weight: bold'
+                return 'color: gray'
+
+            st.dataframe(
+                df_show[['Date', 'Amount', 'Status', 'Address']].style.applymap(color_row, subset=['Status']),
+                use_container_width=True, hide_index=True
+            )
