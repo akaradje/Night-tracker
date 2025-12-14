@@ -8,7 +8,7 @@ import requests
 import json
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
-st.set_page_config(page_title="NIGHT Tracker (Offline Mode)", page_icon="🌙", layout="wide")
+st.set_page_config(page_title="NIGHT Tracker (Time Sort)", page_icon="🌙", layout="wide")
 
 # ==============================================================================
 # ⚙️ CONFIG & KEY
@@ -78,7 +78,6 @@ def process_claim_time(iso_str):
         
         days = total_seconds // 86400
         hours = (total_seconds % 86400) // 3600
-        minutes = (total_seconds % 3600) // 60
         
         parts = []
         if days > 0: parts.append(f"{days}วัน")
@@ -97,7 +96,7 @@ def process_claim_time(iso_str):
 async def fetch_vesting_data(session, wallet_name, address):
     url = f"https://mainnet.prod.gd.midnighttge.io/thaws/{address}/schedule"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0",
         "Origin": "https://redeem.midnight.gd",
         "Referer": "https://redeem.midnight.gd/",
     }
@@ -139,7 +138,7 @@ async def update_database(df):
 # ==============================================================================
 # 🖥️ MAIN UI
 # ==============================================================================
-st.title("🌙 NIGHT Tracker (Saved Data Mode)")
+st.title("🌙 NIGHT Tracker (Sorted by Time)")
 
 col_top1, col_top2 = st.columns([3, 1])
 
@@ -169,17 +168,17 @@ else:
     
     last_update = datetime.fromisoformat(cached.get("updated_at", "")).strftime("%d/%m/%Y %H:%M")
     with col_top1:
-        st.caption(f"💾 ข้อมูลบันทึกล่าสุดเมื่อ: **{last_update}**")
+        st.caption(f"💾 อัปเดตล่าสุด: **{last_update}**")
 
-    with st.spinner("..เช็คราคาตลาด.."):
+    with st.spinner("..เช็คราคา.."):
         p_usd, p_thb = get_market_price()
 
     # --- ตัวแปรสำหรับคำนวณ ---
-    grand_total_alloc = 0     # ยอดทั้งหมด (รวมที่เคลมแล้ว)
-    grand_total_remaining = 0 # ยอดที่เหลือ (ยังไม่เคลม)
+    grand_total_alloc = 0     # ยอดทั้งหมด (Alloc)
+    grand_total_remaining = 0 # ยอดที่เหลือ (Pending)
     wallets_data = {}
     urgent_items = []
-    redeemed_history = [] # เก็บประวัติรายการที่เคลมแล้ว
+    redeemed_history = [] 
     
     # วนลูปข้อมูล
     for item in cached.get("wallets", []):
@@ -192,32 +191,45 @@ else:
             w_alloc = sum(t['amount'] for t in thaws) / 1_000_000
             grand_total_alloc += w_alloc
             
-            # 2. ยอดคงเหลือ (เฉพาะที่ไม่มี Tx ID)
+            # 2. ยอดคงเหลือ (Active - No Tx ID)
             active_thaws = [t for t in thaws if not t.get('transaction_id')]
             w_remain = sum(t['amount'] for t in active_thaws) / 1_000_000
             grand_total_remaining += w_remain
             
-            # 3. ยอดที่เคลมแล้ว (มี Tx ID) - เก็บลงประวัติ
+            # 3. ยอดที่เคลมแล้ว (Has Tx ID)
             redeemed_thaws = [t for t in thaws if t.get('transaction_id')]
             for t in redeemed_thaws:
                 r_amt = t['amount'] / 1_000_000
                 redeemed_history.append({
-                    "Wallet": w_name,
-                    "Address": addr,
-                    "Amount": r_amt,
+                    "Wallet": w_name, "Address": addr, "Amount": r_amt,
                     "Value (THB)": r_amt * p_thb,
                     "Date": t.get('thawing_period_start', '').split('T')[0]
                 })
 
+            # เก็บข้อมูลเฉพาะที่มี active thaws หรือ allocation
             if w_alloc > 0:
-                if w_name not in wallets_data: wallets_data[w_name] = {"total": 0, "addrs": {}}
-                wallets_data[w_name]["total"] += w_remain # ใช้ยอดคงเหลือในการแสดงหัวข้อ
+                if w_name not in wallets_data: 
+                    # เพิ่ม field 'min_sort' เพื่อใช้เรียงลำดับเวลา (ค่าเริ่มต้นเยอะๆ ไว้ก่อน)
+                    wallets_data[w_name] = {"total_alloc": 0, "remaining": 0, "addrs": {}, "min_sort": 99999999999}
+                
+                wallets_data[w_name]["total_alloc"] += w_alloc
+                wallets_data[w_name]["remaining"] += w_remain # เก็บยอดเหลือไว้โชว์ด้วย
                 
                 addr_info = {"amt": w_remain, "claims": []}
+                
+                # ถ้าไม่มี active thaws เลย ให้ min_sort เป็นค่ามากสุด (อยู่ล่างสุด)
+                if not active_thaws:
+                     pass 
+                
                 for t in active_thaws:
                     time_data = process_claim_time(t['thawing_period_start'])
                     amt = t['amount'] / 1_000_000
                     
+                    # --- Logic เรียงลำดับ: เก็บค่าเวลาที่น้อยที่สุดของกระเป๋านี้ ---
+                    if time_data['sort'] < wallets_data[w_name]['min_sort']:
+                        wallets_data[w_name]['min_sort'] = time_data['sort']
+                    # --------------------------------------------------------
+
                     addr_info["claims"].append({
                         "date_str": time_data['date'].strftime('%d/%m/%Y') if time_data['date'] else "-",
                         "amount": amt,
@@ -228,29 +240,27 @@ else:
                     
                     if time_data['urgent']:
                         urgent_items.append({
-                            "Wallet": w_name,
-                            "Address": addr,
-                            "Amount": amt,
-                            "Value (THB)": amt * p_thb,
-                            "Status": time_data['text'],
-                            "Date": time_data['date'].strftime('%d/%m'),
-                            "_sort": time_data['sort']
+                            "Wallet": w_name, "Address": addr, "Amount": amt,
+                            "Value (THB)": amt * p_thb, "Status": time_data['text'],
+                            "Date": time_data['date'].strftime('%d/%m'), "_sort": time_data['sort']
                         })
                 
                 wallets_data[w_name]["addrs"][addr] = addr_info
 
-    # 4. คำนวณยอดที่เคลมไปแล้ว (Diff)
+    # 4. คำนวณยอดที่เคลมไปแล้ว
     grand_total_redeemed = grand_total_alloc - grand_total_remaining
-    val_redeemed = grand_total_redeemed * p_thb
+    val_alloc_thb = grand_total_alloc * p_thb # มูลค่าพอร์ตจากยอดทั้งหมด
 
     # --- แสดงผล Cards ---
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(f'<div class="metric-card"><h5>📦 ทั้งหมด (Alloc)</h5><h2>{grand_total_alloc:,.2f}</h2></div>', unsafe_allow_html=True)
+    m1.markdown(f'<div class="metric-card"><h5>📦 NIGHT ทั้งหมด (Alloc)</h5><h2>{grand_total_alloc:,.2f}</h2></div>', unsafe_allow_html=True)
     m2.markdown(f'<div class="metric-card price-card"><h5>📈 ราคา (Real-time)</h5><h2 style="color:#856404">฿{p_thb:,.4f}</h2><small>${p_usd:,.4f}</small></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="metric-card value-card"><h5>⏳ คงเหลือ (Pending)</h5><h2>{grand_total_remaining:,.2f}</h2></div>', unsafe_allow_html=True)
-    # เพิ่มการ์ดที่ 4: ยอดที่เคลมไปแล้ว
-    m4.markdown(f'<div class="metric-card redeemed-card"><h5>✅ เคลมไปแล้ว</h5><h2>{grand_total_redeemed:,.2f}</h2><small>฿{val_redeemed:,.2f}</small></div>', unsafe_allow_html=True)
+    
+    # แก้ไขการ์ดนี้: มูลค่ารวม (คิดจาก Alloc)
+    m3.markdown(f'<div class="metric-card value-card"><h5>💰 มูลค่าพอร์ต (Alloc)</h5><h2>฿{val_alloc_thb:,.2f}</h2></div>', unsafe_allow_html=True)
+    
+    m4.markdown(f'<div class="metric-card redeemed-card"><h5>✅ เคลมไปแล้ว</h5><h2>{grand_total_redeemed:,.2f}</h2></div>', unsafe_allow_html=True)
 
     # --- แจ้งเตือน ---
     if urgent_items:
@@ -263,36 +273,44 @@ else:
         )
 
     # --- รายละเอียดกระเป๋า ---
-    st.subheader("📂 รายละเอียดกระเป๋า (จากข้อมูลที่บันทึกไว้)")
-    for w_name, data in sorted(wallets_data.items(), key=lambda x: x[1]['total'], reverse=True):
-        val = data['total'] * p_thb
-        with st.expander(f"💼 {w_name} | คงเหลือ: {data['total']:,.2f} NIGHT (฿{val:,.2f})"):
-            
-            # --- เพิ่มปุ่มลิ้งค์เคลมตรงนี้ ---
+    st.subheader("📂 รายละเอียดกระเป๋า (เรียงตามเวลาที่ใกล้เคลม)")
+    
+    # --- Sorting Logic: เรียงตาม min_sort (น้อยไปมาก = เร็วไปช้า) ---
+    sorted_wallets = sorted(wallets_data.items(), key=lambda x: x[1]['min_sort'])
+    # -------------------------------------------------------------
+
+    for w_name, data in sorted_wallets:
+        # คำนวณมูลค่าของยอดคงเหลือ
+        val_remaining = data['remaining'] * p_thb
+        val_alloc = data['total_alloc'] * p_thb
+        
+        # แต่งหัวข้อให้เห็นชัดๆ
+        header = f"💼 {w_name} | เหลือ: {data['remaining']:,.2f} (฿{val_remaining:,.0f}) | รวม: {data['total_alloc']:,.2f}"
+        
+        with st.expander(header):
             st.markdown(f"""
             <a href="{REDEEM_URL}" target="_blank" class="redeem-btn">
                 👉 ไปที่หน้ากดเคลม (Redeem Site)
             </a>
             """, unsafe_allow_html=True)
-            # ---------------------------
 
             for addr, info in data['addrs'].items():
+                # เรียง claim ย่อยใน address ด้วย
                 claims = sorted(info['claims'], key=lambda x: x['sort'])
-                nearest = claims[0] if claims else {}
-                
-                c1, c2, c3 = st.columns([3, 2, 2])
-                c1.text(f"{addr}")
-                c2.markdown(f"**{info['amt']:,.2f}** NIGHT")
-                
-                s_color = "green" if nearest.get('status_code') == 'ready' else "red" if nearest.get('status_code') == 'urgent' else "gray"
-                c3.markdown(f"<span style='color:{s_color}'><b>{nearest.get('status_text', '-')}</b></span>", unsafe_allow_html=True)
-                
-                df_sub = pd.DataFrame(claims)[["date_str", "amount", "status_text"]]
-                df_sub.columns = ["วันที่ปลดล็อค", "จำนวน", "สถานะ"]
-                st.dataframe(df_sub.style.format({"จำนวน": "{:,.2f}"}), use_container_width=True, hide_index=True)
-                st.markdown("---")
+                if claims:
+                    nearest = claims[0]
+                    c1, c2, c3 = st.columns([3, 2, 2])
+                    c1.text(f"{addr}")
+                    c2.markdown(f"**{info['amt']:,.2f}** NIGHT")
+                    s_color = "green" if nearest.get('status_code') == 'ready' else "red" if nearest.get('status_code') == 'urgent' else "gray"
+                    c3.markdown(f"<span style='color:{s_color}'><b>{nearest.get('status_text', '-')}</b></span>", unsafe_allow_html=True)
+                    
+                    df_sub = pd.DataFrame(claims)[["date_str", "amount", "status_text"]]
+                    df_sub.columns = ["วันที่ปลดล็อค", "จำนวน", "สถานะ"]
+                    st.dataframe(df_sub.style.format({"จำนวน": "{:,.2f}"}), use_container_width=True, hide_index=True)
+                    st.markdown("---")
 
-    # --- เพิ่มตารางรายการที่เคลมไปแล้ว ---
+    # --- ตารางประวัติการเคลม ---
     st.subheader("📜 รายการที่เคลมไปแล้ว (Redeemed History)")
     if redeemed_history:
         df_red = pd.DataFrame(redeemed_history)
