@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- 1. ตั้งค่าหน้าเว็บ ---
-st.set_page_config(page_title="NIGHT Tracker (Real-time Status)", page_icon="🌙", layout="wide")
+st.set_page_config(page_title="NIGHT Tracker (Dynamic 2025)", page_icon="🌙", layout="wide")
 
 # ==============================================================================
 # ⚙️ CONFIG
@@ -23,7 +23,8 @@ st.markdown("""
     }
     .price-card { background-color: #fff3cd; color: #856404; }
     .value-card { background-color: #d1e7dd; color: #0f5132; }
-    .redeemed-card { background-color: #e2e3e5; color: #383d41; }
+    .status-ready { color: #28a745; font-weight: bold; }
+    .status-wait { color: #6c757d; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -43,76 +44,87 @@ def get_market_price():
     except: pass
     return usd_price, usd_price * thb_rate
 
-def calculate_current_status(row):
-    """คำนวณสถานะใหม่ตามเวลาปัจจุบัน (28 ธ.ค. 2025)"""
-    # ถ้าเคลมไปแล้ว ให้คงไว้เหมือนเดิม
+def calculate_time_status(row):
+    """คำนวณสถานะใหม่ตามเวลาปัจจุบัน"""
+    # ถ้าสถานะเดิมบอกว่าเคลมแล้ว ให้คงไว้
     if "Claimed" in str(row['Status']):
-        return "Claimed (เคลมแล้ว)"
-    
+        return "Claimed (เคลมแล้ว)", -999999999
+
     try:
-        # แปลง Unlock Date เป็น datetime object
+        # แปลง Unlock Date เป็นรูปแบบที่คำนวณได้
         unlock_dt = pd.to_datetime(row['Unlock Date'], dayfirst=True)
         now = datetime.now()
-        delta = unlock_dt - now
-        
-        if delta.total_seconds() <= 0:
-            return "✅ เคลมได้เลย"
+        diff = unlock_dt - now
+        total_sec = diff.total_seconds()
+
+        if total_sec <= 0:
+            return "✅ เคลมได้เลย", total_sec
         else:
-            days = delta.days
-            hours = delta.seconds // 3600
-            return f"⏳ {days}วัน {hours}ชม."
+            days = int(total_sec // 86400)
+            hours = int((total_sec % 86400) // 3600)
+            mins = int((total_sec % 3600) // 60)
+            return f"⏳ {days}วัน {hours}ชม. {mins}นาที", total_sec
     except:
-        return row['Status']
+        return row['Status'], 999999999
 
 # ==============================================================================
 # MAIN UI
 # ==============================================================================
-st.title("🌙 NIGHT Tracker (Dynamic Status)")
+st.title("🌙 NIGHT Tracker (Dynamic 2025 Status)")
 
 if not os.path.exists(DATA_FILE):
     st.error(f"❌ ไม่พบไฟล์ {DATA_FILE}")
 else:
-    # 1. โหลดข้อมูล
+    # 1. โหลดข้อมูลและราคาสด
     df = pd.read_csv(DATA_FILE)
     p_usd, p_thb = get_market_price()
 
-    # 2. ปรับปรุง Status ตามเวลาปัจจุบัน
-    df['Status'] = df.apply(calculate_current_status, axis=1)
+    # 2. ปรับปรุงสถานะตามเวลาปัจจุบัน
+    # คำนวณ Status และเพิ่มคอลัมน์ sort_order เพื่อเรียงลำดับเวลา
+    df[['New_Status', 'sort_order']] = df.apply(lambda r: pd.Series(calculate_time_status(r)), axis=1)
 
-    # 3. ประมวลผล Metrics
+    # 3. สรุปยอด Dashboard
     total_alloc = df['Amount'].sum()
-    df_redeemed = df[df['Status'] == "Claimed (เคลมแล้ว)"]
-    total_redeemed = df_redeemed['Amount'].sum()
+    df_claimed = df[df['New_Status'] == "Claimed (เคลมแล้ว)"]
+    total_redeemed = df_claimed['Amount'].sum()
     total_remaining = total_alloc - total_redeemed
+
+    st.divider()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(f'<div class="metric-card"><h5>📦 ทั้งหมด (Alloc)</h5><h2>{total_alloc:,.2f}</h2></div>', unsafe_allow_html=True)
+    c2.markdown(f'<div class="metric-card price-card"><h5>📈 ราคาสด (THB)</h5><h2>฿{p_thb:,.4f}</h2></div>', unsafe_allow_html=True)
+    c3.markdown(f'<div class="metric-card value-card"><h5>💰 มูลค่าที่เหลือ</h5><h2>฿{total_remaining * p_thb:,.2f}</h2></div>', unsafe_allow_html=True)
+    c4.markdown(f'<div class="metric-card redeemed-card"><h5>✅ เคลมไปแล้ว</h5><h2>{total_redeemed:,.2f}</h2></div>', unsafe_allow_html=True)
+
+    # 4. รายการที่ต้องเคลมด่วน (Ready to Claim)
+    df_ready = df[df['New_Status'] == "✅ เคลมได้เลย"].copy()
+    if not df_ready.empty:
+        st.subheader("🚨 รายการที่ปลดล็อกแล้ว (พร้อมโอนออก)")
+        df_ready['Value (THB)'] = df_ready['Amount'] * p_thb
+        st.dataframe(
+            df_ready[["Wallet Name", "Address", "Amount", "Value (THB)", "Unlock Date"]].style.format({"Amount": "{:,.2f}", "Value (THB)": "{:,.2f}"}),
+            use_container_width=True, hide_index=True
+        )
+
+    # 5. ตารางภาพรวมรายกระเป๋า (เรียงตามเวลาปลดล็อก)
+    st.subheader("📂 ตารางภาพรวม (เรียงตามเวลาปลดล็อก)")
+    # กรองเอาเฉพาะที่ยังไม่เคลม
+    df_pending = df[df['New_Status'] != "Claimed (เคลมแล้ว)"].sort_values('sort_order')
     
-    # รายการด่วน (เคลมได้เลย หรือ เหลือไม่เกิน 7 วัน)
-    df_urgent = df[df['Status'].str.contains("✅|⏳ 0วัน|⏳ 1วัน|⏳ 2วัน|⏳ 3วัน|⏳ 4วัน|⏳ 5วัน|⏳ 6วัน|⏳ 7วัน", na=False)]
+    if not df_pending.empty:
+        # ปรับแต่งการแสดงผลสีใน Status
+        def color_status(val):
+            color = '#28a745' if '✅' in val else '#6c757d'
+            return f'color: {color}; font-weight: bold;'
 
-    # 4. แสดง Dashboard
-    m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(f'<div class="metric-card"><h5>📦 ทั้งหมด (Alloc)</h5><h2>{total_alloc:,.2f}</h2></div>', unsafe_allow_html=True)
-    m2.markdown(f'<div class="metric-card price-card"><h5>📈 ราคา (THB)</h5><h2>฿{p_thb:,.4f}</h2></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="metric-card value-card"><h5>💰 มูลค่าที่เหลือ</h5><h2>฿{total_remaining * p_thb:,.2f}</h2></div>', unsafe_allow_html=True)
-    m4.markdown(f'<div class="metric-card redeemed-card"><h5>✅ เคลมไปแล้ว</h5><h2>{total_redeemed:,.2f}</h2></div>', unsafe_allow_html=True)
+        st.dataframe(
+            df_pending[["Wallet Name", "Address", "Amount", "New_Status", "Unlock Date"]].style.applymap(color_status, subset=['New_Status']).format({"Amount": "{:,.2f}"}),
+            use_container_width=True, hide_index=True
+        )
 
-    # 5. ตารางรายการด่วน
-    if not df_urgent.empty:
-        st.error(f"🚨 แจ้งเตือน: พบ {len(df_urgent)} รายการที่ต้องเคลม/กำลังจะถึงกำหนด")
-        st.dataframe(df_urgent[["Wallet Name", "Address", "Amount", "Status", "Unlock Date"]], use_container_width=True, hide_index=True)
+    # 6. ประวัติการเคลมสำเร็จ
+    if not df_claimed.empty:
+        with st.expander("✅ ดูประวัติรายการที่เคลมสำเร็จแล้ว"):
+            st.dataframe(df_claimed[["Wallet Name", "Address", "Amount", "Unlock Date"]], use_container_width=True, hide_index=True)
 
-    # 6. ประวัติการเคลม
-    if not df_redeemed.empty:
-        st.subheader("✅ รายการที่เคลมสำเร็จแล้ว")
-        df_red_view = df_redeemed.copy()
-        df_red_view['Value (THB)'] = df_red_view['Amount'] * p_thb
-        st.dataframe(df_red_view[["Wallet Name", "Address", "Amount", "Unlock Date", "Value (THB)"]].style.format({"Amount": "{:,.2f}", "Value (THB)": "{:,.2f}"}), use_container_width=True, hide_index=True)
-
-    # 7. รายละเอียดรายกระเป๋า
-    st.subheader("📂 รายละเอียดรายกระเป๋า (อัปเดตเวลาล่าสุด)")
-    for w in sorted(df['Wallet Name'].unique()):
-        w_df = df[df['Wallet Name'] == w]
-        w_remain = w_df[w_df['Status'] != "Claimed (เคลมแล้ว)"]['Amount'].sum()
-        with st.expander(f"💼 Wallet {w} | เหลือ: {w_remain:,.2f} NIGHT"):
-            st.dataframe(w_df[["Address", "Amount", "Status", "Unlock Date"]].style.format({"Amount": "{:,.2f}"}), use_container_width=True, hide_index=True)
-
-    st.caption(f"🕒 วันนี้: {datetime.now().strftime('%d/%m/%Y %H:%M')} | ข้อมูลอ้างอิงจาก Unlock Date ในไฟล์ {DATA_FILE}")
+    st.caption(f"🕒 อัปเดตล่าสุด: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} | วันนี้คือวันที่ 28 ธันวาคม 2025")
